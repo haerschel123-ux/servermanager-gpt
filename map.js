@@ -24,6 +24,12 @@ const CITIES = [
   ["Tisy", 1700, 14000],
 ];
 
+/* Echte Chernarus-Kartenbilder vom Community-Kachelserver (wird auch von
+ * anderen DayZ-Tools genutzt). Das Koordinatengitter bleibt als
+ * Offline-Reserve über den Ebenen-Umschalter wählbar. */
+const TILES_TOPO = "https://static.xam.nu/dayz/maps/chernarusplus/1.27/topographic/{z}/{x}/{y}.webp";
+const TILES_SAT = "https://static.xam.nu/dayz/maps/chernarusplus/1.27/satellite/{z}/{x}/{y}.webp";
+
 const LAYER_STYLE = {
   fresh:   { color: "#5cc768", label: "Spawn (fresh)" },
   hop:     { color: "#4d9de0", label: "Spawn (hop)" },
@@ -100,20 +106,36 @@ const DayZMap = {
       transformation: new L.Transformation(256 / WORLD, 0, -256 / WORLD, 256),
     });
     this.map = L.map("map", {
-      crs, minZoom: 1, maxZoom: 7, zoomControl: true,
+      crs, minZoom: 1, maxZoom: 8, zoomControl: true,
       maxBounds: [[-2000, -2000], [WORLD + 2000, WORLD + 2000]],
-      attributionControl: false,
+      attributionControl: true,
     });
+    this.map.attributionControl.setPrefix(false);
     this.map.setView([WORLD / 2, WORLD / 2], 2);
-    new GridBackdrop({ noWrap: true }).addTo(this.map);
 
+    const tileOpts = {
+      noWrap: true, minNativeZoom: 0, maxNativeZoom: 8,
+      bounds: [[0, 0], [WORLD, WORLD]],
+      attribution: "Karte © Bohemia Interactive (Kacheln: xam.nu)",
+    };
+    this.baseLayers = {
+      "🗺️ Karte": L.tileLayer(TILES_TOPO, tileOpts),
+      "🛰️ Satellit": L.tileLayer(TILES_SAT, tileOpts),
+      "▦ Gitter (offline)": new GridBackdrop({ noWrap: true }),
+    };
+    this.baseLayers["🗺️ Karte"].addTo(this.map);
+
+    this.cityLabels = L.layerGroup();
     CITIES.forEach(([name, x, z]) => {
-      L.marker([z, x], {
+      this.cityLabels.addLayer(L.marker([z, x], {
         icon: L.divIcon({ className: "city-label", html: name,
                           iconSize: [120, 16], iconAnchor: [60, 8] }),
         interactive: false, keyboard: false,
-      }).addTo(this.map);
+      }));
     });
+    this.cityLabels.addTo(this.map);
+    L.control.layers(this.baseLayers, { "Ortsnamen": this.cityLabels })
+      .addTo(this.map);
 
     for (const key of Object.keys(LAYER_STYLE)) {
       this.groups[key] = L.layerGroup().addTo(this.map);
@@ -126,7 +148,7 @@ const DayZMap = {
     if (this.tileLayer) { this.map.removeLayer(this.tileLayer); this.tileLayer = null; }
     if (url) {
       this.tileLayer = L.tileLayer(url, {
-        noWrap: true, minNativeZoom: 0, maxNativeZoom: 7,
+        noWrap: true, minNativeZoom: 0, maxNativeZoom: 8,
         bounds: [[0, 0], [WORLD, WORLD]],
       }).addTo(this.map);
     }
