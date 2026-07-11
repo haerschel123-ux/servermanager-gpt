@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DayZ Nitrado Server-Manager</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🧟</text></svg>">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">🧟 DayZ <span>Server-Manager</span></div>
+  <nav id="tabs">
+    <button data-tab="map" class="active">🗺️ Karte</button>
+    <button data-tab="files">📁 Dateien</button>
+    <button data-tab="loot">🎒 Loot</button>
+    <button data-tab="server">🖥️ Server</button>
+  </nav>
+  <div class="header-right">
+    <span id="status-pill" class="pill">…</span>
+    <button id="btn-settings" title="Einstellungen">⚙️</button>
+  </div>
+</header>
+
+<!-- ============================== Karte ============================== -->
+<main id="tab-map" class="tab active">
+  <aside class="map-side">
+    <h3>Ebene bearbeiten</h3>
+    <label class="radio"><input type="radio" name="layer" value="spawns" checked>
+      🧍 Spieler-Spawnpunkte</label>
+    <div class="sub" id="spawn-sub">
+      <select id="spawn-section">
+        <option value="fresh">fresh – neue Charaktere</option>
+        <option value="hop">hop – Serverwechsler</option>
+        <option value="travel">travel – Reisende</option>
+      </select>
+    </div>
+    <label class="radio"><input type="radio" name="layer" value="events">
+      🚁 Event-Spawns</label>
+    <div class="sub hidden" id="event-sub">
+      <select id="event-select"></select>
+      <button id="btn-new-event" class="small">+ Neues Event</button>
+    </div>
+    <label class="radio"><input type="radio" name="layer" value="objects">
+      🏗️ Objekte (Gebäude &amp; Items)</label>
+
+    <hr>
+    <p class="hint">Auf die Karte <b>klicken</b> = Punkt setzen.<br>
+       Marker <b>ziehen</b> = verschieben.<br>
+       Marker <b>anklicken</b> = Details / löschen.</p>
+
+    <hr>
+    <h3>Anzeigen</h3>
+    <label><input type="checkbox" id="show-spawns" checked> Spawnpunkte</label>
+    <label><input type="checkbox" id="show-events" checked> Events</label>
+    <label><input type="checkbox" id="show-objects" checked> Objekte</label>
+
+    <hr>
+    <div id="map-dirty" class="dirty hidden">● Ungespeicherte Änderungen</div>
+    <button id="btn-map-save" class="primary">💾 Speichern</button>
+    <button id="btn-map-save-restart">💾 Speichern &amp; Server neu starten</button>
+    <p class="hint small-text">Änderungen wirken erst nach einem
+       Server-Neustart – Items/Teleport „live“ ohne Neustart ist auf
+       Konsolenservern technisch nicht möglich.</p>
+  </aside>
+  <div id="map"></div>
+</main>
+
+<!-- ============================== Dateien ============================ -->
+<main id="tab-files" class="tab">
+  <aside class="files-side">
+    <div class="search-row">
+      <input id="file-search" placeholder="Datei suchen… (z.B. types)">
+      <button id="btn-search" class="small">🔍</button>
+    </div>
+    <div id="search-results" class="hidden"></div>
+    <div id="breadcrumb"></div>
+    <ul id="file-list"></ul>
+  </aside>
+  <section class="editor-pane">
+    <div class="editor-bar">
+      <span id="editor-path" class="mono">Keine Datei geöffnet</span>
+      <span id="editor-dirty" class="dirty hidden">●</span>
+      <button id="btn-file-save" class="primary" disabled>💾 Speichern</button>
+    </div>
+    <textarea id="editor" class="mono" spellcheck="false"
+      placeholder="Wähle links eine Datei aus – z.B. im Missionsordner: types.xml, cfggameplay.json, cfgeventspawns.xml …"></textarea>
+  </section>
+</main>
+
+<!-- ============================== Loot =============================== -->
+<main id="tab-loot" class="tab">
+  <div class="loot-wrap">
+    <div class="loot-bar">
+      <input id="loot-search" placeholder="Item suchen… (z.B. AKM, Bandage)">
+      <span id="loot-changed" class="dirty hidden"></span>
+      <button id="btn-loot-save" class="primary" disabled>💾 Speichern</button>
+    </div>
+    <p class="hint">Loot-Ökonomie (<span class="mono">db/types.xml</span>):
+      <b>nominal</b> = Zielanzahl auf der Karte, <b>min</b> = Mindestanzahl,
+      <b>lifetime</b> = Sekunden bis Despawn, <b>restock</b> = Sekunden bis Nachschub.</p>
+    <div class="table-scroll">
+      <table id="loot-table">
+        <thead><tr>
+          <th>Item</th><th>Kategorie</th><th>nominal</th><th>min</th>
+          <th>lifetime</th><th>restock</th><th>quantmin</th><th>quantmax</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<!-- ============================== Server ============================= -->
+<main id="tab-server" class="tab">
+  <div class="server-wrap">
+    <div class="card" id="server-card">
+      <h3>Serverstatus</h3>
+      <div id="server-status">Lade…</div>
+      <div class="btn-row">
+        <button id="btn-restart" class="primary">🔄 Neustarten</button>
+        <button id="btn-stop" class="danger">⏹ Stoppen</button>
+        <button id="btn-refresh-status" class="small">Aktualisieren</button>
+      </div>
+    </div>
+    <div class="card info">
+      <h3>ℹ️ Wichtig zu wissen (Konsolen-Server)</h3>
+      <ul>
+        <li>Eine <b>init.c gibt es auf PS4/PS5/Xbox-Servern nicht</b> –
+          eigenes Scripting ist nur auf PC-Servern möglich. Dieses Tool zeigt
+          dir dafür <b>alle</b> Dateien, die wirklich auf deinem Server liegen
+          (auch die, die das Nitrado-Webinterface nicht anzeigt).</li>
+        <li><b>Spieler live teleportieren oder Items sofort spawnen</b> geht auf
+          Konsole nicht – dafür bräuchte es Server-Mods, die nur auf PC laufen.</li>
+        <li>Was geht: <b>Spawnpunkte</b>, <b>Events</b> (z.B. Heli-Crashes),
+          <b>Gebäude/Objekte</b> (Objekt-Spawner) und die komplette
+          <b>Loot-Tabelle</b> ändern. Nach dem Speichern einmal
+          <b>neustarten</b> – dann ist alles im Spiel.</li>
+        <li>Vor jedem Speichern legt das Tool automatisch ein <b>Backup</b> an
+          – am PC im Ordner <span class="mono">backups/</span>, am Handy im
+          Browser (abrufbar unter ⚙️ → Backups).</li>
+      </ul>
+    </div>
+  </div>
+</main>
+
+<!-- ============================ Einrichtung =========================== -->
+<div id="setup-overlay" class="overlay hidden">
+  <div class="dialog">
+    <h2>🔑 Mit Nitrado verbinden</h2>
+    <div id="setup-step1">
+      <p>Dieses Tool braucht einmalig einen <b>Nitrado-API-Token</b>:</p>
+      <ol>
+        <li>Öffne <a href="https://account.nitrado.net/developer/tokens" target="_blank">account.nitrado.net → Entwicklerportal → Tokens</a></li>
+        <li>„Token erstellen“ – Name egal, Berechtigung <b>service</b> ankreuzen</li>
+        <li>Den langen Code kopieren und hier einfügen:</li>
+      </ol>
+      <input id="setup-token" class="mono" placeholder="API-Token hier einfügen…">
+      <div class="btn-row">
+        <button id="btn-setup-next" class="primary">Weiter →</button>
+        <button id="btn-setup-close" class="hidden">Abbrechen</button>
+      </div>
+    </div>
+    <div id="setup-step2" class="hidden">
+      <p>Wähle deinen DayZ-Server:</p>
+      <div id="setup-services"></div>
+      <div class="btn-row">
+        <button id="btn-setup-back" class="small">← Zurück</button>
+      </div>
+    </div>
+    <div id="setup-settings" class="hidden">
+      <hr>
+      <div id="backup-section" class="hidden">
+        <h3>💾 Backups (auf diesem Gerät)</h3>
+        <p class="hint">Vor jedem Speichern wird die alte Server-Version hier
+          im Browser gesichert. Zum Wiederherstellen: herunterladen und den
+          Inhalt über den Dateien-Tab wieder speichern.</p>
+        <div id="backup-list" class="hint">Noch keine Backups.</div>
+        <hr>
+      </div>
+      <h3>Karten-Kacheln (optional)</h3>
+      <p class="hint">Ohne Eintrag zeigt die Karte ein Koordinatengitter mit
+        Ortsnamen. Wer eigene Chernarus-Kacheln hat (z.B. selbst gehostet),
+        kann hier eine URL-Vorlage eintragen, etwa
+        <span class="mono">https://mein-server/{z}/{x}/{y}.png</span></p>
+      <input id="setup-tileurl" class="mono" placeholder="Kachel-URL (optional)">
+      <div class="btn-row">
+        <button id="btn-settings-save" class="primary">Speichern</button>
+      </div>
+    </div>
+    <p id="setup-error" class="error hidden"></p>
+  </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="direct.js"></script>
+<script src="app.js"></script>
+<script src="map.js"></script>
+<script src="editor.js"></script>
+</body>
+</html>

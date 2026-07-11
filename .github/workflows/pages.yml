@@ -1,0 +1,38 @@
+# Veröffentlicht die App automatisch als GitHub-Pages-Webseite.
+# Läuft bei jedem Push und kann im Actions-Tab auch von Hand gestartet werden.
+name: App veröffentlichen
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Code holen
+        uses: actions/checkout@v4
+      - name: GitHub Pages aktivieren
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: App-Dateien paketieren
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - name: Veröffentlichen
+        id: deployment
+        uses: actions/deploy-pages@v4
