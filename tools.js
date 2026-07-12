@@ -389,38 +389,51 @@ ${kids}
 
   /* --------------------------- Mini-Karten-Picker (Modal) */
 
-  let pickMap = null, pickGroup = null, pickTarget = null;
+  let pickMap = null, pickGroup = null, pickTarget = null, pickMapKey = null;
 
   function openMapPicker(target) {
     pickTarget = target;
     $("#mappick-overlay").classList.remove("hidden");
     const shared = window.DayZMapShared;
+    const key = shared.currentKey();
+    const cfg = shared.MAPS[key];
+    // Bei Kartenwechsel die gecachte Picker-Karte verwerfen und neu bauen
+    if (pickMap && pickMapKey !== key) {
+      pickMap.remove();
+      pickMap = null;
+    }
     if (!pickMap) {
+      pickMapKey = key;
+      const WORLD = cfg.size;
       pickMap = L.map("mappick-map", {
-        crs: shared.makeCrs(), minZoom: 1, maxZoom: 8,
-        maxBounds: [[-2000, -2000], [shared.WORLD + 2000, shared.WORLD + 2000]],
+        crs: shared.makeCrs(WORLD), minZoom: 1, maxZoom: 8,
+        maxBounds: [[-2000, -2000], [WORLD + 2000, WORLD + 2000]],
         attributionControl: false,
       });
-      L.tileLayer(shared.TILES_TOPO, {
+      L.tileLayer(shared.tileUrl(cfg.slug, "topographic"), {
         noWrap: true, minNativeZoom: 0, maxNativeZoom: 8,
-        bounds: [[0, 0], [shared.WORLD, shared.WORLD]],
+        bounds: [[0, 0], [WORLD, WORLD]],
       }).addTo(pickMap);
-      new shared.GridBackdrop({ noWrap: true, opacity: 0.35 }).addTo(pickMap);
+      new shared.GridBackdrop({ noWrap: true, opacity: 0.35, world: WORLD }).addTo(pickMap);
       pickGroup = L.layerGroup().addTo(pickMap);
       pickMap.on("click", (ev) => {
         const x = Math.round(ev.latlng.lng * 10) / 10;
         const z = Math.round(ev.latlng.lat * 10) / 10;
-        if (x < 0 || z < 0 || x > shared.WORLD || z > shared.WORLD) return;
+        const size = shared.MAPS[pickMapKey].size;
+        if (x < 0 || z < 0 || x > size || z > size) return;
         addPickMarker({ x, z, a: 0 });
       });
     }
+    // Umschalt-Buttons im Modal markieren
+    $$("#map-switch-pick button").forEach((btn) =>
+      btn.classList.toggle("active", btn.dataset.mapkey === key));
     pickGroup.clearLayers();
     (target.values() || []).forEach(addPickMarker);
     // Die Karte wird im gerade sichtbar gewordenen Modal mehrfach neu
     // vermessen, damit Klick-Koordinaten von Anfang an stimmen.
     [30, 150, 400].forEach((ms) => setTimeout(() => {
       pickMap.invalidateSize();
-      pickMap.setView([shared.WORLD / 2, shared.WORLD / 2], 2);
+      pickMap.setView([cfg.size / 2, cfg.size / 2], 2);
     }, ms));
   }
 
@@ -445,6 +458,13 @@ ${kids}
   }
 
   function bindPickerButtons() {
+    $$("#map-switch-pick button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        // Wechselt die globale Kartenwahl (eine Quelle der Wahrheit)
+        window.DayZMapShared.setMap(btn.dataset.mapkey);
+        if (pickTarget) openMapPicker(pickTarget);
+      });
+    });
     $("#btn-mappick-ok").addEventListener("click", () => {
       const points = pickGroup.getLayers().map((m) => m._point);
       if (pickTarget) pickTarget.setValues(points);

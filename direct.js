@@ -395,7 +395,8 @@ const DirectMode = (() => {
 
   function state() {
     const configured = !!(cfg.token && cfg.mission_dir);
-    const st = { configured, demo: false, direct: true, tile_url: cfg.tile_url || "" };
+    const st = { configured, demo: false, direct: true,
+                 tile_url: cfg.tile_url || "", map: cfg.map || "" };
     if (configured) {
       st.mission_dir = cfg.mission_dir;
       st.root_dir = cfg.root_dir;
@@ -457,7 +458,9 @@ const DirectMode = (() => {
       }
 
       case "/api/settings":
-        cfg.tile_url = (body.tile_url || "").trim();
+        // Nur mitgeschickte Felder ändern (Teil-Update)
+        if ("tile_url" in body) cfg.tile_url = String(body.tile_url || "").trim();
+        if ("map" in body) cfg.map = String(body.map || "").trim();
         saveCfg();
         return state();
 

@@ -208,6 +208,21 @@ tr:hover td { background: #ffffff08; }
 .status-stopped, .status-stopping { color: var(--danger); font-weight: 600; }
 .status-restarting, .status-starting { color: var(--warn); font-weight: 600; }
 
+/* ------------------------------------------------------ Karten-Umschalter */
+.map-switch { display: flex; gap: 6px; margin: 4px 0 10px; }
+.map-switch button {
+  flex: 1;
+  padding: 7px 4px;
+  font-size: 13px;
+  margin: 0;
+}
+.map-switch button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
 /* --------------------------------------------------------------- Tools */
 #tab-tools { flex-direction: column; }
 .tools-wrap { flex: 1; overflow-y: auto; padding: 16px 20px; min-height: 0; min-width: 0; }

@@ -1,13 +1,23 @@
-/* Interaktive Chernarus-Karte (Leaflet, eigenes Koordinatensystem).
+/* Interaktive DayZ-Karte (Leaflet, eigenes Koordinatensystem).
  *
- * DayZ-Weltkoordinaten: X = West→Ost, Z = Süd→Nord, Karte 15360 x 15360 m.
- * Leaflet: latlng = [Z, X]. Bei Zoom 0 ist die ganze Karte eine 256px-Kachel,
- * damit optionale eigene Kachel-Server (Standard-XYZ-Schema) direkt passen.
+ * DayZ-Weltkoordinaten: X = West→Ost, Z = Süd→Nord. Leaflet: latlng = [Z, X].
+ * Bei Zoom 0 ist die ganze Karte eine 256px-Kachel (Standard-XYZ-Schema).
+ * Unterstützte Karten: Chernarus, Livonia (Enoch), Sakhal — umschaltbar.
  */
 "use strict";
 
-const WORLD = 15360;
+/* Die drei offiziellen Karten mit Weltgröße (Meter) und Kachel-Slug.
+ * Größen: Chernarus 15360, Livonia 12800 (163 km²), Sakhal 10240 (~105 km²). */
+const MAPS = {
+  chernarusplus: { label: "Chernarus", size: 15360, slug: "chernarusplus" },
+  enoch: { label: "Livonia", size: 12800, slug: "livonia" },
+  sakhal: { label: "Sakhal", size: 10240, slug: "sakhal" },
+};
 
+const tileUrl = (slug, layer) =>
+  `https://static.xam.nu/dayz/maps/${slug}/1.27/${layer}/{z}/{x}/{y}.webp`;
+
+/* Ortsnamen-Overlay (bisher nur für Chernarus gepflegt) */
 const CITIES = [
   ["Chernogorsk", 6700, 2600], ["Elektrozavodsk", 10300, 2300],
   ["Balota", 4500, 2400], ["Kamenka", 1800, 2200],
@@ -24,12 +34,6 @@ const CITIES = [
   ["Tisy", 1700, 14000],
 ];
 
-/* Echte Chernarus-Kartenbilder vom Community-Kachelserver (wird auch von
- * anderen DayZ-Tools genutzt). Das Koordinatengitter bleibt als
- * Offline-Reserve über den Ebenen-Umschalter wählbar. */
-const TILES_TOPO = "https://static.xam.nu/dayz/maps/chernarusplus/1.27/topographic/{z}/{x}/{y}.webp";
-const TILES_SAT = "https://static.xam.nu/dayz/maps/chernarusplus/1.27/satellite/{z}/{x}/{y}.webp";
-
 const LAYER_STYLE = {
   fresh:   { color: "#5cc768", label: "Spawn (fresh)" },
   hop:     { color: "#4d9de0", label: "Spawn (hop)" },
@@ -38,9 +42,11 @@ const LAYER_STYLE = {
   objects: { color: "#4dd0c4", label: "Objekt" },
 };
 
-/* Kachel-Ebene, die ein Koordinatengitter zeichnet (Fallback ohne Kartenbild) */
+/* Kachel-Ebene, die ein Koordinatengitter zeichnet (Fallback ohne Kartenbild).
+ * Weltgröße kommt als Option: new GridBackdrop({world: 15360}) */
 const GridBackdrop = L.GridLayer.extend({
   createTile(coords) {
+    const WORLD = this.options.world || 15360;
     const tile = document.createElement("canvas");
     tile.width = tile.height = 256;
     const ctx = tile.getContext("2d");
@@ -93,15 +99,31 @@ const GridBackdrop = L.GridLayer.extend({
 
 const DayZMap = {
   map: null,
+  mapKey: "chernarusplus",
   tileLayer: null,
   groups: {},
   data: null,
   loadedOk: { playerspawns: false, events: false, objects: false },
   dirty: false,
 
+  world() { return MAPS[this.mapKey].size; },
+
   /* ------------------------------------------------------------- Aufbau */
 
   create() {
+    for (const key of Object.keys(LAYER_STYLE)) {
+      this.groups[key] = L.layerGroup();
+    }
+    this.buildMap();
+    this.bindUi();
+  },
+
+  /* Leaflet-Instanz für die aktuell gewählte Karte (neu) aufbauen */
+  buildMap() {
+    const cfg = MAPS[this.mapKey];
+    const WORLD = cfg.size;
+    if (this.map) { this.map.remove(); this.map = null; this.tileLayer = null; }
+
     const crs = L.extend({}, L.CRS.Simple, {
       transformation: new L.Transformation(256 / WORLD, 0, -256 / WORLD, 256),
     });
@@ -116,37 +138,66 @@ const DayZMap = {
     const tileOpts = {
       noWrap: true, minNativeZoom: 0, maxNativeZoom: 8,
       bounds: [[0, 0], [WORLD, WORLD]],
-      attribution: "Karte © Bohemia Interactive (Kacheln: xam.nu)",
+      attribution: cfg.label + " © Bohemia Interactive (Kacheln: xam.nu)",
     };
     this.baseLayers = {
-      "🗺️ Karte": L.tileLayer(TILES_TOPO, tileOpts),
-      "🛰️ Satellit": L.tileLayer(TILES_SAT, tileOpts),
-      "▦ Gitter (offline)": new GridBackdrop({ noWrap: true }),
+      "🗺️ Karte": L.tileLayer(tileUrl(cfg.slug, "topographic"), tileOpts),
+      "🛰️ Satellit": L.tileLayer(tileUrl(cfg.slug, "satellite"), tileOpts),
+      "▦ Gitter (offline)": new GridBackdrop({ noWrap: true, world: WORLD }),
     };
     this.baseLayers["🗺️ Karte"].addTo(this.map);
 
     this.cityLabels = L.layerGroup();
-    CITIES.forEach(([name, x, z]) => {
-      this.cityLabels.addLayer(L.marker([z, x], {
-        icon: L.divIcon({ className: "city-label", html: name,
-                          iconSize: [120, 16], iconAnchor: [60, 8] }),
-        interactive: false, keyboard: false,
-      }));
-    });
-    this.cityLabels.addTo(this.map);
-    L.control.layers(this.baseLayers, { "Ortsnamen": this.cityLabels })
-      .addTo(this.map);
+    if (this.mapKey === "chernarusplus") {
+      CITIES.forEach(([name, x, z]) => {
+        this.cityLabels.addLayer(L.marker([z, x], {
+          icon: L.divIcon({ className: "city-label", html: name,
+                            iconSize: [120, 16], iconAnchor: [60, 8] }),
+          interactive: false, keyboard: false,
+        }));
+      });
+      this.cityLabels.addTo(this.map);
+      L.control.layers(this.baseLayers, { "Ortsnamen": this.cityLabels })
+        .addTo(this.map);
+    } else {
+      L.control.layers(this.baseLayers).addTo(this.map);
+    }
 
-    for (const key of Object.keys(LAYER_STYLE)) {
-      this.groups[key] = L.layerGroup().addTo(this.map);
+    // Marker-Gruppen (bleiben über Kartenwechsel erhalten) wieder anhängen
+    const toggles = { fresh: "#show-spawns", hop: "#show-spawns",
+                      travel: "#show-spawns", events: "#show-events",
+                      objects: "#show-objects" };
+    for (const [key, sel] of Object.entries(toggles)) {
+      const box = document.querySelector(sel);
+      if (!box || box.checked) this.groups[key].addTo(this.map);
     }
     this.map.on("click", (ev) => this.onMapClick(ev));
-    this.bindUi();
+    if (window.App && App.state.tile_url) this.applyTiles(App.state.tile_url);
+  },
+
+  /* Karte wechseln (chernarusplus | enoch | sakhal) */
+  setMap(key, persist) {
+    if (!MAPS[key] || key === this.mapKey) { this.updateSwitchButtons(); return; }
+    this.mapKey = key;
+    this.buildMap();
+    this.redraw();
+    this.updateSwitchButtons();
+    if (persist !== false) {
+      api("/api/settings", { map: key }).catch(() => {});
+      if (window.App) App.state.map = key;
+    }
+  },
+
+  updateSwitchButtons() {
+    $$(".map-switch button").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.mapkey === this.mapKey);
+    });
   },
 
   applyTiles(url) {
     if (this.tileLayer) { this.map.removeLayer(this.tileLayer); this.tileLayer = null; }
     if (url) {
+      const WORLD = this.world();
       this.tileLayer = L.tileLayer(url, {
         noWrap: true, minNativeZoom: 0, maxNativeZoom: 8,
         bounds: [[0, 0], [WORLD, WORLD]],
@@ -272,7 +323,7 @@ const DayZMap = {
     if (!this.data) return;
     const x = Math.round(ev.latlng.lng * 10) / 10;
     const z = Math.round(ev.latlng.lat * 10) / 10;
-    if (x < 0 || z < 0 || x > WORLD || z > WORLD) return;
+    if (x < 0 || z < 0 || x > this.world() || z > this.world()) return;
     const mode = document.querySelector('input[name="layer"]:checked').value;
 
     if (mode === "spawns") {
@@ -342,6 +393,10 @@ const DayZMap = {
   /* ---------------------------------------------------------------- UI */
 
   bindUi() {
+    $$('#map-switch-main button').forEach((btn) => {
+      btn.addEventListener("click", () => this.setMap(btn.dataset.mapkey));
+    });
+    this.updateSwitchButtons();
     $$('input[name="layer"]').forEach((radio) => {
       radio.addEventListener("change", () => {
         $("#spawn-sub").classList.toggle("hidden", radio.value !== "spawns" || !radio.checked);
@@ -386,12 +441,15 @@ window.DayZMap = DayZMap;
 /* Gemeinsame Karten-Bausteine für andere Module (z.B. Mini-Karte im
  * Tools-Tab), damit CRS/Kacheln/Gitter nicht dupliziert werden müssen. */
 window.DayZMapShared = {
-  WORLD,
-  TILES_TOPO,
+  MAPS,
   GridBackdrop,
-  makeCrs() {
+  tileUrl,
+  currentKey: () => DayZMap.mapKey,
+  worldSize: () => MAPS[DayZMap.mapKey].size,
+  setMap: (key, persist) => DayZMap.setMap(key, persist),
+  makeCrs(size) {
     return L.extend({}, L.CRS.Simple, {
-      transformation: new L.Transformation(256 / WORLD, 0, -256 / WORLD, 256),
+      transformation: new L.Transformation(256 / size, 0, -256 / size, 256),
     });
   },
 };

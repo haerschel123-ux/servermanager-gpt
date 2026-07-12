@@ -28,6 +28,13 @@
 <!-- ============================== Karte ============================== -->
 <main id="tab-map" class="tab active">
   <aside class="map-side">
+    <h3>Karte</h3>
+    <div class="map-switch" id="map-switch-main">
+      <button data-mapkey="chernarusplus" class="active">Chernarus</button>
+      <button data-mapkey="enoch">Livonia</button>
+      <button data-mapkey="sakhal">Sakhal</button>
+    </div>
+    <hr>
     <h3>Ebene bearbeiten</h3>
     <label class="radio"><input type="radio" name="layer" value="spawns" checked>
       🧍 Spieler-Spawnpunkte</label>
@@ -192,6 +199,11 @@
 <div id="mappick-overlay" class="overlay hidden">
   <div class="dialog wide">
     <h2 id="mappick-title">🗺️ Position(en) wählen</h2>
+    <div class="map-switch" id="map-switch-pick">
+      <button data-mapkey="chernarusplus">Chernarus</button>
+      <button data-mapkey="enoch">Livonia</button>
+      <button data-mapkey="sakhal">Sakhal</button>
+    </div>
     <p class="hint">Auf die Karte tippen = Punkt setzen · Marker ziehen =
       verschieben · Marker antippen = löschen</p>
     <div id="mappick-map"></div>

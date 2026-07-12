@@ -292,9 +292,18 @@ function esc(s) {
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/* Karte aus dem Missionsordner erkennen (dayzOffline.enoch / .sakhal / …) */
+function detectMapKey(missionDir) {
+  const dir = (missionDir || "").toLowerCase();
+  if (dir.includes(".enoch")) return "enoch";
+  if (dir.includes(".sakhal")) return "sakhal";
+  return "chernarusplus";
+}
+
 function afterConfigured() {
   refreshServerStatus();
   if (window.DayZMap) {
+    DayZMap.setMap(App.state.map || detectMapKey(App.state.mission_dir), false);
     DayZMap.applyTiles(App.state.tile_url);
     DayZMap.loadData();
   }
