@@ -250,6 +250,25 @@ ${kids}
 
   const mission = (rel) => (App.state.mission_dir || "") + "/" + rel;
 
+  /* Der Nitrado-Dateiserver ist case-sensitiv – die tatsächliche Schreibweise
+     einer Datei im Missionsordner nachschlagen (z.B. cfgEffectArea.json),
+     damit vorhandene Dateien ergänzt statt doppelt angelegt werden. */
+  let missionFiles = null;
+  async function missionPath(rel) {
+    if (rel.includes("/")) return mission(rel);   // Unterordner: unverändert
+    try {
+      if (!missionFiles) {
+        const data = await api("/api/files?dir=" +
+          encodeURIComponent(App.state.mission_dir || ""));
+        missionFiles = data.entries.filter((e) => e.type === "file").map((e) => e.name);
+      }
+      const hit = missionFiles.find((n) => n.toLowerCase() === rel.toLowerCase());
+      return mission(hit || rel);
+    } catch (err) {
+      return mission(rel);
+    }
+  }
+
   async function readOrNull(path) {
     try {
       return (await api("/api/file?path=" + encodeURIComponent(path))).content;
@@ -679,13 +698,13 @@ ${kids}
     desc: "Start-Ausrüstung für frisch gespawnte Spieler festlegen – neu anlegen oder vorhandene Presets bearbeiten. (Funktioniert ab DayZ 1.20 auch auf Konsole.)",
     async render(form) {
       this._file = null;
-      const gameplay = await readJsonOrNull(mission("cfggameplay.json"));
+      const gameplay = await readJsonOrNull(await missionPath("cfggameplay.json"));
       const files = (gameplay && gameplay.PlayerData &&
                      gameplay.PlayerData.spawnGearPresetFiles) || [];
       form.append(loadPicker("– Neues Preset erstellen –", files, async (file) => {
         this._file = file || null;
         if (!file) return;
-        const preset = await readJsonOrNull(mission(file));
+        const preset = await readJsonOrNull(await missionPath(file));
         if (!preset) return toast("Preset „" + file + "“ konnte nicht geladen werden.", "error");
         $("#lo-name").value = preset.name || file.replace(/\.json$/i, "");
         for (const [slot] of SLOTS) $("#lo-slot-" + slot).value = "";
@@ -771,13 +790,13 @@ ${kids}
       };
       return [
         {
-          path: mission(fileName),
+          path: await missionPath(fileName),
           summary: ["Preset „" + name + "“ mit " + slotSets.length +
                     " Kleidungs-Slot(s) und " + loose.length + " Inventar-Item(s)."],
           transform: () => JSON.stringify(preset, null, 4) + "\n",
         },
         {
-          path: mission("cfggameplay.json"),
+          path: await missionPath("cfggameplay.json"),
           summary: ["Trägt „" + fileName + "“ bei PlayerData → spawnGearPresetFiles ein" +
                     " (falls noch nicht vorhanden)."],
           transform: (current) => {
@@ -801,7 +820,7 @@ ${kids}
     id: "gaszone", icon: "☣️", title: "Gas-Zonen Builder",
     desc: "Statische Kontaminationszonen (wie Rify/Pavlovo) neu anlegen oder vorhandene bearbeiten – mit Partikel-Effekt und sicheren Teleport-Punkten für Spieler, die in der Zone einloggen.",
     async render(form) {
-      const eff = await readJsonOrNull(mission("cfgeffectarea.json"));
+      const eff = await readJsonOrNull(await missionPath("cfgEffectArea.json"));
       const areas = (eff && Array.isArray(eff.Areas)) ? eff.Areas : [];
       form.append(loadPicker("– Neue Gaszone erstellen –",
         areas.map((a) => a.AreaName).filter(Boolean), (name) => {
@@ -880,7 +899,7 @@ ${kids}
         a.Data.Pos[2] + ", Radius " + radius + " m.");
       if (safe.length) summary.push(safe.length + " sichere Teleport-Punkt(e).");
       return [{
-        path: mission("cfgeffectarea.json"),
+        path: await missionPath("cfgEffectArea.json"),
         summary,
         transform: (current) => {
           const data = current ? JSON.parse(current)
@@ -904,7 +923,7 @@ ${kids}
     desc: "Feste Zombie-Horden an Wunschpositionen – neu anlegen oder vorhandene bearbeiten. Zombie-Typen bequem per Liste auswählen, Bewegungsverhalten und Zonen-Radius einstellbar.",
     async render(form) {
       this._evDoc = await readXmlOrNull(mission("db/events.xml"));
-      this._spDoc = await readXmlOrNull(mission("cfgeventspawns.xml"));
+      this._spDoc = await readXmlOrNull(await missionPath("cfgeventspawns.xml"));
       const hordes = [];
       if (this._evDoc) this._evDoc.querySelectorAll("events > event").forEach((ev) => {
         const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
@@ -1008,7 +1027,7 @@ ${kids}
           },
         },
         {
-          path: mission("cfgeventspawns.xml"),
+          path: await missionPath("cfgeventspawns.xml"),
           summary: [count + " Horden-Zone(n), Radius " + radius + " m: " +
                     positions.map((p) => "X " + p.x + "/Z " + p.z).join(", ") + "."],
           transform: (current) => {
@@ -1055,7 +1074,7 @@ ${kids}
         }
       }
       // Aktuellen Wreck-Loot aus cfgspawnabletypes.xml zum Bearbeiten laden
-      const stDoc = await readXmlOrNull(mission("cfgspawnabletypes.xml"));
+      const stDoc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
       const node = stDoc && stDoc.querySelector('type[name="Wreck_UH1Y"]');
       if (node) {
         const rows = Array.from(node.querySelectorAll(":scope > attachments, :scope > cargo"))
@@ -1083,7 +1102,7 @@ ${kids}
       const positions = this.pos.values();
       const plans = [
         {
-          path: mission("cfgspawnabletypes.xml"),
+          path: await missionPath("cfgspawnabletypes.xml"),
           summary: ["Heli-Crash-Loot: " + loot.map((l) => l.item + " (" + l.num + " %)").join(", ")],
           transform: (current) => {
             const base = current ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<spawnabletypes>\n</spawnabletypes>\n';
@@ -1102,7 +1121,7 @@ ${kids}
       ];
       if (positions.length) {
         plans.push({
-          path: mission("cfgeventspawns.xml"),
+          path: await missionPath("cfgeventspawns.xml"),
           summary: [positions.length + " zusätzliche Absturzposition(en)."],
           transform: (current) => {
             if (current === null) throw new Error("cfgeventspawns.xml wurde auf dem Server nicht gefunden.");
@@ -1152,8 +1171,8 @@ ${kids}
     desc: "Fahrzeuge an Wunschpositionen spawnen – neue Fahrzeug-Events anlegen oder vorhandene laden und bearbeiten. Auf Wunsch komplett fahrbereit mit allen Teilen.",
     async render(form) {
       this._evDoc = await readXmlOrNull(mission("db/events.xml"));
-      this._spDoc = await readXmlOrNull(mission("cfgeventspawns.xml"));
-      this._stDoc = await readXmlOrNull(mission("cfgspawnabletypes.xml"));
+      this._spDoc = await readXmlOrNull(await missionPath("cfgeventspawns.xml"));
+      this._stDoc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
       this._nameTouched = false;
       const vehEvents = [];
       if (this._evDoc) this._evDoc.querySelectorAll("events > event").forEach((ev) => {
@@ -1276,7 +1295,7 @@ ${kids}
           },
         },
         {
-          path: mission("cfgeventspawns.xml"),
+          path: await missionPath("cfgeventspawns.xml"),
           summary: [positions.length + " Spawnposition(en) für " + eventName +
                     (posMode === "append" ? " (zusätzlich zu vorhandenen)."
                                           : " (ersetzt vorhandene).")],
@@ -1294,7 +1313,7 @@ ${kids}
         }
         if (rows.length) {
           plans.push({
-            path: mission("cfgspawnabletypes.xml"),
+            path: await missionPath("cfgspawnabletypes.xml"),
             summary: [type + " spawnt fahrbereit mit: " +
                       this.parts.values().map((p) => p.num + "× " + p.item).join(", ")],
             transform: (current) => {
@@ -1314,7 +1333,7 @@ ${kids}
     id: "spawnable", icon: "🎒", title: "Inhalte & Aufsätze",
     desc: "Bestimmen, womit ein Item spawnt: Waffen mit Aufsätzen, Rucksäcke mit Inhalt, Zombies mit Loot in den Taschen – neu anlegen oder vorhandene Einträge bearbeiten. (cfgspawnabletypes.xml)",
     async render(form) {
-      this._doc = await readXmlOrNull(mission("cfgspawnabletypes.xml"));
+      this._doc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
       const names = this._doc
         ? Array.from(this._doc.querySelectorAll("spawnabletypes > type"))
             .map((t) => t.getAttribute("name")).filter(Boolean)
@@ -1368,7 +1387,7 @@ ${kids}
       ];
       if (!rows.length) throw new Error("Bitte mindestens einen Aufsatz oder Inhalt angeben.");
       return [{
-        path: mission("cfgspawnabletypes.xml"),
+        path: await missionPath("cfgspawnabletypes.xml"),
         summary: ["„" + target + "“ spawnt mit: " + rows.map((r) =>
           r.item + " (" + Math.round(r.chance * 100) + " %, " +
           (r.kind === "cargo" ? "Inhalt" : "Aufsatz") + ")").join(", ")],
@@ -1426,7 +1445,7 @@ ${kids}
 
       // Vorhandene Events zum Laden anbieten
       this._eventsDoc = await readXmlOrNull(mission("db/events.xml"));
-      this._spawnsDoc = await readXmlOrNull(mission("cfgeventspawns.xml"));
+      this._spawnsDoc = await readXmlOrNull(await missionPath("cfgeventspawns.xml"));
       if (this._eventsDoc) {
         this._eventsDoc.querySelectorAll("events > event").forEach((ev) => {
           loadSel.append(h("option", { value: ev.getAttribute("name") },
@@ -1516,7 +1535,7 @@ ${kids}
       }];
       if (positions.length) {
         plans.push({
-          path: mission("cfgeventspawns.xml"),
+          path: await missionPath("cfgeventspawns.xml"),
           summary: [positions.length + " feste Position(en) für „" + name + "“."],
           transform: (current) => {
             if (current === null) throw new Error("cfgeventspawns.xml wurde auf dem Server nicht gefunden.");
@@ -1536,6 +1555,7 @@ ${kids}
      Caches leeren, Vormerkungen verwerfen, offenes Formular schließen. */
   function onMissionChanged() {
     itemCache = null;
+    missionFiles = null;
     ["dl-items", "dl-zmb"].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.remove();
