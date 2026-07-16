@@ -29,10 +29,17 @@ jobs:
         uses: actions/configure-pages@v5
         with:
           enablement: true
+      # Sicherheit: Nur die Website-Dateien veröffentlichen – NIEMALS das
+      # komplette Repo (config.json enthält Bot-/Nitrado-/FTP-Zugangsdaten).
+      - name: Nur Website-Dateien paketieren
+        run: |
+          mkdir _site
+          cp index.html style.css app.js tools.js map.js editor.js direct.js _site/
+          cp -r vendor _site/vendor
       - name: App-Dateien paketieren
         uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
       - name: Veröffentlichen
         id: deployment
         uses: actions/deploy-pages@v4

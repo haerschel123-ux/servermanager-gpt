@@ -1,0 +1,29 @@
+# ── Geheimnisse & Bot-Laufzeitdaten: gehören NIE ins Repo ──
+config.json
+guilds_config.json
+banlist.json
+log_state.json
+whitelist_requests.json
+announcements.json
+events_recent.json
+
+# Economy-Datenbank + Backups
+*.db
+*.db-shm
+*.db-wal
+*.db.bak-*
+
+# Logs
+dayz_bot.log
+*.log
+
+# Bot-Code gehört nicht in dieses Website-Repo
+dayz_bot.py
+shop_items.json
+types.xml
+
+# Sonstiges
+*.vsix
+__pycache__/
+_site/
+.claude/
