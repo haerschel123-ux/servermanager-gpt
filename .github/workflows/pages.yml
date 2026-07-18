@@ -35,7 +35,9 @@ jobs:
         run: |
           mkdir _site
           cp index.html style.css app.js tools.js map.js editor.js direct.js _site/
+          cp manifest.webmanifest icon.svg sw.js _site/
           cp -r vendor _site/vendor
+          cp -r loadout _site/loadout
       - name: App-Dateien paketieren
         uses: actions/upload-pages-artifact@v3
         with:

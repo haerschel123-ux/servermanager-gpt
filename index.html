@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DayZ Nitrado Server-Manager</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🧟</text></svg>">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1c2229">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -18,6 +22,7 @@
     <button data-tab="loot">🎒 Loot</button>
     <button data-tab="server">🖥️ Server</button>
     <button data-tab="tools">🧰 Tools</button>
+    <a class="nav-link" href="loadout/">🎒 Loadout+</a>
   </nav>
   <div class="header-right">
     <span id="status-pill" class="pill">…</span>
@@ -224,7 +229,8 @@
         <li>„Token erstellen“ – Name egal, Berechtigung <b>service</b> ankreuzen</li>
         <li>Den langen Code kopieren und hier einfügen:</li>
       </ol>
-      <input id="setup-token" class="mono" placeholder="API-Token hier einfügen…">
+      <input id="setup-token" class="mono" type="password" autocomplete="off"
+        autocapitalize="none" spellcheck="false" placeholder="API-Token hier einfügen…">
       <div class="btn-row">
         <button id="btn-setup-next" class="primary">Weiter →</button>
         <button id="btn-setup-close" class="hidden">Abbrechen</button>
@@ -255,10 +261,22 @@
       <input id="setup-tileurl" class="mono" placeholder="Kachel-URL (optional)">
       <div class="btn-row">
         <button id="btn-settings-save" class="primary">Speichern</button>
+        <button id="btn-server-change">Anderen Server wählen</button>
       </div>
     </div>
     <p id="setup-error" class="error hidden"></p>
   </div>
+</div>
+
+<div id="install-tip" class="install-tip hidden">
+  <div><b>📲 Wie eine App benutzen</b><br><span>Zum Startbildschirm hinzufügen – dann ist der Server-Manager immer griffbereit.</span></div>
+  <button id="btn-install" class="primary hidden">Installieren</button>
+  <button id="btn-install-help">So geht’s</button>
+  <button id="btn-install-close" class="small" aria-label="Hinweis schließen">✕</button>
+</div>
+
+<div id="loading" class="loading hidden" role="status" aria-live="polite">
+  <span class="spinner"></span><span>Lade…</span>
 </div>
 
 <div id="toast-wrap"></div>

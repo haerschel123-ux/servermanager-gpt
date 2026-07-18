@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#111611">
+  <title>DayZ Loadout-Presets</title>
+  <link rel="icon" href="../icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./">🎒 <span>DayZ</span> Loadout</a>
+    <nav>
+      <a href="./">Generator</a>
+      <a class="active" href="browse.html">Meine Presets</a>
+      <a href="../">← Server-Manager</a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero">
+      <div><p class="eyebrow">LOADOUT-BIBLIOTHEK</p><h1>Presets durchsuchen</h1><p>Eigene Entwürfe bleiben nur im Browser dieses Geräts. Beispiel-Presets kannst du kopieren und anpassen.</p></div>
+      <a class="button primary" href="./">＋ Neues Loadout</a>
+    </section>
+    <section>
+      <div class="section-head"><div><p class="eyebrow">AUF DIESEM GERÄT</p><h2>Meine Loadouts</h2></div></div>
+      <div id="saved-list" class="preset-grid"></div>
+    </section>
+    <section>
+      <div class="section-head"><div><p class="eyebrow">SCHNELLSTART</p><h2>Beispiel-Presets</h2></div></div>
+      <div id="example-list" class="preset-grid"></div>
+    </section>
+  </main>
+  <script src="examples.js"></script>
+  <script src="browse.js"></script>
+</body>
+</html>

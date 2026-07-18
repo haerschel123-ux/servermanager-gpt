@@ -48,7 +48,15 @@ header {
   cursor: pointer;
   font-size: 15px;
 }
-#tabs button:hover { color: var(--text); background: var(--bg3); }
+#tabs .nav-link {
+  color: var(--muted);
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+#tabs button:hover, #tabs .nav-link:hover { color: var(--text); background: var(--bg3); }
 #tabs button.active { color: var(--text); background: var(--bg3); border-color: var(--border); }
 .header-right { display: flex; align-items: center; gap: 10px; }
 .pill {
@@ -381,6 +389,7 @@ input, select {
   .brand { font-size: 15px; }
   #tabs { order: 3; width: 100%; overflow-x: auto; }
   #tabs button { padding: 8px 10px; white-space: nowrap; }
+  #tabs .nav-link { padding: 8px 10px; }
 
   /* Karte: Karte oben, Bedienleiste darunter (einklappbar per Kopfzeile) */
   #tab-map { flex-direction: column; }
@@ -417,6 +426,60 @@ input, select {
   button { padding: 10px 14px; }
   .leaflet-popup-content { font-size: 14px; }
 }
+
+/* ------------------------------------------------------- App-Installation */
+.install-tip {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 1900;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 10px 12px;
+  border: 1px solid #4a6b4e;
+  border-radius: 12px;
+  background: #1c2a1e;
+  box-shadow: 0 8px 28px #000a;
+}
+.install-tip > div { flex: 1; }
+.install-tip span { color: var(--muted); font-size: 12px; }
+.install-tip button { flex: 0 0 auto; }
+
+@media (max-width: 620px) {
+  .install-tip { flex-wrap: wrap; }
+  .install-tip > div { flex-basis: calc(100% - 44px); }
+}
+
+.loading {
+  position: fixed;
+  top: 74px;
+  left: 50%;
+  z-index: 3100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  background: var(--bg2);
+  box-shadow: 0 4px 14px #0008;
+  transform: translateX(-50%);
+  color: var(--muted);
+  font-size: 13px;
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #ffffff2b;
+  border-top-color: var(--accent2);
+  border-radius: 50%;
+  animation: spin .75s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* -------------------------------------------------------------- Toasts */
 #toast-wrap {

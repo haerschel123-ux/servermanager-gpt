@@ -3,7 +3,7 @@
 Verwalte deinen **DayZ-Konsolenserver (PS4/PS5/Xbox) bei Nitrado** direkt im
 Browser – auch komplett vom Handy aus:
 
-**👉 App öffnen: https://haerschel123-ux.github.io/Init_c-Manager-f-r-claude/**
+**👉 App öffnen: https://haerschel123-ux.github.io/servermanager-gpt/**
 
 - 📁 Alle Server-Dateien finden & bearbeiten (auch die, die das
   Nitrado-Panel nicht anzeigt), mit Suche über den ganzen Server
@@ -12,6 +12,10 @@ Browser – auch komplett vom Handy aus:
 - 🎒 Loot-Editor für `types.xml` als durchsuchbare Tabelle
 - 🖥️ Serverstatus, Neustart und Stopp per Knopfdruck
 - 💾 Automatisches Backup vor jedem Speichern (im Browser, unter ⚙️ abrufbar)
+- 🧰 Generatoren für Loadouts, Gaszonen, Horden, Heli-Crashes, Fahrzeuge,
+  Inhalte/Aufsätze und Events – jeweils mit Vorschau und Diff
+- 🎒 Eigenständiger Loadout-Designer mit 14 Ausrüstungsplätzen, Cargo,
+  1.900+ Items, Waffen-Aufsätzen, Magazinen und Browser-Presetbibliothek
 
 ## Erste Schritte
 

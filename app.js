@@ -8,6 +8,7 @@ const App = {
   state: { configured: false, demo: false, tile_url: "" },
   setupToken: "",
 };
+window.App = App;
 
 /* ------------------------------------------------------------------ API
  * Zwei Betriebsarten:
@@ -17,6 +18,13 @@ const App = {
  */
 
 let apiMode = "server";
+let pendingRequests = 0;
+
+function setLoading(delta) {
+  pendingRequests = Math.max(0, pendingRequests + delta);
+  const indicator = $("#loading");
+  if (indicator) indicator.classList.toggle("hidden", pendingRequests === 0);
+}
 
 async function detectApiMode() {
   try {
@@ -30,16 +38,21 @@ async function detectApiMode() {
 }
 
 async function api(path, body) {
-  if (apiMode === "direct") return DirectMode.call(path, body);
-  const opts = body === undefined
-    ? {}
-    : { method: "POST", body: JSON.stringify(body),
-        headers: { "Content-Type": "application/json" } };
-  const resp = await fetch(path, opts);
-  let data = {};
-  try { data = await resp.json(); } catch (e) { /* leere Antwort */ }
-  if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
-  return data;
+  setLoading(1);
+  try {
+    if (apiMode === "direct") return await DirectMode.call(path, body);
+    const opts = body === undefined
+      ? {}
+      : { method: "POST", body: JSON.stringify(body),
+          headers: { "Content-Type": "application/json" } };
+    const resp = await fetch(path, opts);
+    let data = {};
+    try { data = await resp.json(); } catch (e) { /* leere Antwort */ }
+    if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+    return data;
+  } finally {
+    setLoading(-1);
+  }
 }
 
 /* ---------------------------------------------------------------- Toasts */
@@ -73,7 +86,7 @@ function showSetup(settingsOnly) {
   $("#setup-overlay").classList.remove("hidden");
   $("#setup-step2").classList.add("hidden");
   $("#setup-error").classList.add("hidden");
-  $("#setup-step1").classList.toggle("hidden", !!settingsOnly && App.state.demo);
+  $("#setup-step1").classList.toggle("hidden", !!settingsOnly);
   $("#setup-settings").classList.toggle("hidden", !settingsOnly);
   $("#btn-setup-close").classList.toggle("hidden", !App.state.configured);
   $("#setup-tileurl").value = App.state.tile_url || "";
@@ -134,6 +147,8 @@ async function selectService(id) {
     toast("Verbinde… suche Missionsordner auf dem Server…");
     App.state = await api("/api/setup/select",
       { token: App.setupToken, service_id: id });
+    App.setupToken = "";
+    $("#setup-token").value = "";
     $("#setup-overlay").classList.add("hidden");
     toast("Verbunden! Missionsordner: " + App.state.mission_dir);
     afterConfigured();
@@ -152,6 +167,15 @@ $("#btn-settings-save").addEventListener("click", async () => {
   } catch (err) {
     setupError(err.message);
   }
+});
+
+$("#btn-server-change").addEventListener("click", () => {
+  $("#setup-settings").classList.add("hidden");
+  $("#setup-step2").classList.add("hidden");
+  $("#setup-step1").classList.remove("hidden");
+  $("#setup-token").value = "";
+  $("#setup-token").focus();
+  toast("API-Token erneut eingeben und den gewünschten Server auswählen.");
 });
 
 /* ------------------------------------------------------------ Server-Tab */
@@ -281,6 +305,7 @@ const Loot = {
     }
   },
 };
+window.Loot = Loot;
 
 $("#loot-search").addEventListener("input", () => Loot.render());
 $("#btn-loot-save").addEventListener("click", () => Loot.save());
@@ -310,6 +335,42 @@ function afterConfigured() {
   if (window.Files) Files.openDir(App.state.mission_dir || App.state.root_dir);
 }
 
+/* ----------------------------------------------------- App-Installation */
+
+let installPrompt = null;
+const standalone = () => window.matchMedia("(display-mode: standalone)").matches ||
+  window.navigator.standalone === true;
+
+function showInstallTip() {
+  if (standalone() || localStorage.getItem("dayz-manager-install-tip") === "hidden") return;
+  $("#install-tip").classList.remove("hidden");
+}
+
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  $("#btn-install").classList.remove("hidden");
+  showInstallTip();
+});
+
+$("#btn-install").addEventListener("click", async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  $("#install-tip").classList.add("hidden");
+});
+
+$("#btn-install-help").addEventListener("click", () => {
+  alert("Android/Chrome: Browser-Menü ⋮ → „Zum Startbildschirm hinzufügen“.\n\n" +
+        "iPhone/Safari: Teilen-Symbol □↑ → „Zum Home-Bildschirm“.");
+});
+
+$("#btn-install-close").addEventListener("click", () => {
+  localStorage.setItem("dayz-manager-install-tip", "hidden");
+  $("#install-tip").classList.add("hidden");
+});
+
 async function init() {
   apiMode = await detectApiMode();
   try {
@@ -324,6 +385,12 @@ async function init() {
   } else {
     $("#status-pill").textContent = "nicht verbunden";
     showSetup(false);
+  }
+  setTimeout(showInstallTip, 1200);
+  if ("serviceWorker" in navigator && location.protocol === "https:") {
+    navigator.serviceWorker.register("sw.js").catch(() => {
+      // Die App funktioniert auch ohne Offline-Cache vollständig.
+    });
   }
 }
 

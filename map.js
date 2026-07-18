@@ -145,7 +145,18 @@ const DayZMap = {
       "🛰️ Satellit": L.tileLayer(tileUrl(cfg.slug, "satellite"), tileOpts),
       "▦ Gitter (offline)": new GridBackdrop({ noWrap: true, world: WORLD }),
     };
-    this.baseLayers["🗺️ Karte"].addTo(this.map);
+    const topo = this.baseLayers["🗺️ Karte"];
+    const grid = this.baseLayers["▦ Gitter (offline)"];
+    let failedTiles = 0;
+    topo.on("tileerror", () => {
+      failedTiles += 1;
+      if (failedTiles === 3 && this.map && this.map.hasLayer(topo)) {
+        this.map.removeLayer(topo);
+        grid.addTo(this.map);
+        toast("Kartenbilder sind gerade nicht erreichbar – das Koordinatengitter wurde eingeschaltet.", "warn");
+      }
+    });
+    topo.addTo(this.map);
 
     this.cityLabels = L.layerGroup();
     if (this.mapKey === "chernarusplus") {
@@ -223,7 +234,17 @@ const DayZMap = {
       this.tileLayer = L.tileLayer(url, {
         noWrap: true, minNativeZoom: 0, maxNativeZoom: 8,
         bounds: [[0, 0], [WORLD, WORLD]],
-      }).addTo(this.map);
+      });
+      let failures = 0;
+      this.tileLayer.on("tileerror", () => {
+        failures += 1;
+        if (failures === 3 && this.tileLayer) {
+          this.map.removeLayer(this.tileLayer);
+          this.tileLayer = null;
+          toast("Die eigene Kachel-URL konnte nicht geladen werden. Die Standardkarte bleibt sichtbar.", "warn");
+        }
+      });
+      this.tileLayer.addTo(this.map);
     }
   },
 

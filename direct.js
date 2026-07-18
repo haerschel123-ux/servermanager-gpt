@@ -319,24 +319,36 @@ const DirectMode = (() => {
   }
 
   function updateTypes(text, updates) {
-    const doc = parseXml(text);
-    const nodes = {};
-    doc.querySelectorAll("types > type").forEach((n) => { nodes[n.getAttribute("name")] = n; });
-    const missing = [];
-    for (const [name, fields] of Object.entries(updates)) {
-      const node = nodes[name];
-      if (!node) { missing.push(name); continue; }
+    // Zuerst mit dem DOM prüfen, damit beschädigte XML nie hochgeladen wird.
+    // Danach werden ausschließlich die Textwerte der gewählten Felder im
+    // Original-String ersetzt. So bleiben Deklaration, Kommentare, Leerzeichen,
+    // Zeilenenden und alle 5.000+ unangetasteten <type>-Blöcke byte-genau gleich.
+    parseXml(text);
+    const pending = new Set(Object.keys(updates || {}));
+    const typeRe = /<type\b([^>]*)>[\s\S]*?<\/type\s*>/gi;
+    const nameRe = /\bname\s*=\s*(["'])(.*?)\1/i;
+    const patched = text.replace(typeRe, (block, attrs) => {
+      const nameMatch = nameRe.exec(attrs);
+      if (!nameMatch) return block;
+      const name = nameMatch[2];
+      const fields = updates && updates[name];
+      if (!fields) return block;
+      pending.delete(name);
+      let next = block;
       for (const [field, value] of Object.entries(fields)) {
         if (!TYPE_FIELDS.includes(field) || value === null) continue;
-        let child = node.querySelector(":scope > " + field);
-        if (!child) {
-          child = doc.createElement(field);
-          node.appendChild(child);
-        }
-        child.textContent = String(Math.trunc(Number(value) || 0));
+        const fieldRe = new RegExp(
+          "(<" + field + "\\b[^>]*>)([\\s\\S]*?)(<\\/" + field + "\\s*>)", "i");
+        const numeric = String(Math.trunc(Number(value) || 0));
+        next = next.replace(fieldRe, (whole, open, oldValue, close) => {
+          const leading = (/^\s*/.exec(oldValue) || [""])[0];
+          const trailing = (/\s*$/.exec(oldValue) || [""])[0];
+          return open + leading + numeric + trailing + close;
+        });
       }
-    }
-    return { text: dumpXml(doc), missing };
+      return next;
+    });
+    return { text: patched, missing: Array.from(pending) };
   }
 
   /* ------------------------------------------------ Objekt-Spawner-JSON */
