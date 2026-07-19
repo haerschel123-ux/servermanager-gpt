@@ -201,6 +201,7 @@
   const richVisible = toolsApi.loadoutVisibleState(richLoadout, "fallback");
   const richNoop = toolsApi.updateLoadoutPreset(
     richLoadoutText, richVisible, JSON.parse(JSON.stringify(richVisible)), richLoadout);
+  const richNoopParsed = JSON.parse(richNoop);
   const richDesired = JSON.parse(JSON.stringify(richVisible));
   richDesired.name = "Edited rich preset";
   richDesired.slots.Body = "Hoodie_Green";
@@ -219,6 +220,11 @@
   };
   newVisible.slots.Hands = "M4A1";
   const newLoadout = toolsApi.buildNewLoadoutPreset(newVisible);
+  const newLoadoutText = JSON.stringify(newLoadout);
+  const newLoadoutVisible = toolsApi.loadoutVisibleState(newLoadout, "fallback");
+  const newLoadoutNoop = toolsApi.updateLoadoutPreset(
+    newLoadoutText, newLoadoutVisible,
+    JSON.parse(JSON.stringify(newLoadoutVisible)), newLoadout);
   const clampedPicker = toolsApi.clampPickerPoint({ x: -50.04, z: 16000 }, 15360);
 
   const report = {
@@ -281,18 +287,25 @@
           "attachments,cargo,attachments" &&
         changedSpawnable.includes('<!-- anderer Eintrag bleibt exakt -->') &&
         changedSpawnable.includes('<type name="Other"><cargo chance="1"><item name="Keep" chance="1"/></cargo></type>'),
-      loadoutNoopByteExact: richNoop === richLoadoutText,
+      loadoutLegacySchemaMigrated: richNoop !== richLoadoutText &&
+        richNoopParsed.version === undefined &&
+        richNoopParsed.attachmentSlotItemSets[0].slotName === "shoulderL" &&
+        Array.isArray(richNoopParsed.attachmentSlotItemSets[0]
+          .discreteItemSets[0].complexChildrenTypes) &&
+        !JSON.stringify(richNoopParsed).includes('"complexChildrenSets"'),
+      loadoutValidNoopByteExact: newLoadoutNoop === newLoadoutText,
       loadoutTargetedMergePreservesRichData:
         richUpdated.name === "Edited rich preset" &&
-        richUpdated.version === 2 && richUpdated.spawnWeight === 7 &&
+        richUpdated.version === undefined && richUpdated.spawnWeight === 7 &&
         richUpdated.characterTypes.join(",") === "SurvivorM_Mirek" &&
         richUpdated.customTopLevel.keep.join(",") === "1,2,3" &&
+        richUpdated.attachmentSlotItemSets[0].slotName === "shoulderL" &&
         richUpdated.attachmentSlotItemSets[0].discreteItemSets.length === 2 &&
         richUpdated.attachmentSlotItemSets[0].discreteItemSets[0].quickBarSlot === 2 &&
         richUpdated.attachmentSlotItemSets[0].discreteItemSets[0]
           .simpleChildrenTypes.join(",") === "ACOGOptic" &&
         richUpdated.attachmentSlotItemSets[0].discreteItemSets[0]
-          .complexChildrenSets[0].unknownComplex === "keep" &&
+          .complexChildrenTypes[0].unknownComplex === "keep" &&
         richUpdated.attachmentSlotItemSets[0].discreteItemSets[0]
           .attributes.customAttribute === true &&
         richUpdated.attachmentSlotItemSets[0].discreteItemSets[0]
@@ -305,7 +318,7 @@
           "Hoodie_Green" &&
         richUpdated.attachmentSlotItemSets[1].discreteItemSets[0].quickBarSlot === 4 &&
         richUpdated.attachmentSlotItemSets[1].discreteItemSets[0]
-          .complexChildrenSets[0].nested === true &&
+          .complexChildrenTypes[0].nested === true &&
         JSON.stringify(richUpdated.attachmentSlotItemSets[1].discreteItemSets[1]) ===
           JSON.stringify(richLoadout.attachmentSlotItemSets[1].discreteItemSets[1]) &&
         JSON.stringify(richUpdated.attachmentSlotItemSets[2]) ===
@@ -313,19 +326,19 @@
         richUpdated.discreteUnsortedItemSets.length === 2 &&
         richUpdated.discreteUnsortedItemSets[0].unknownCargo === "keep-a" &&
         richUpdated.discreteUnsortedItemSets[1].unknownCargo === "keep-b" &&
-        richUpdated.discreteUnsortedItemSets[0].complexChildrenSets[0].unknown ===
+        richUpdated.discreteUnsortedItemSets[0].complexChildrenTypes[0].unknown ===
           "complex-a" &&
-        richUpdated.discreteUnsortedItemSets[1].complexChildrenSets[0].unknown ===
+        richUpdated.discreteUnsortedItemSets[1].complexChildrenTypes[0].unknown ===
           "complex-b" &&
         richCargo.filter((item) => item === "Apple").length === 1 &&
         richCargo.filter((item) => item === "BandageDressing").length === 1 &&
         richCargo.filter((item) => item === "HuntingKnife").length === 2,
-      newLoadoutValid: newLoadout.version === 1 &&
+      newLoadoutValid: newLoadout.version === undefined &&
         newLoadout.attachmentSlotItemSets.length === 1 &&
         newLoadout.attachmentSlotItemSets[0].slotName === "Hands" &&
         newLoadout.attachmentSlotItemSets[0].discreteItemSets[0].quickBarSlot === -1 &&
         Array.isArray(newLoadout.attachmentSlotItemSets[0]
-          .discreteItemSets[0].complexChildrenSets) &&
+          .discreteItemSets[0].complexChildrenTypes) &&
         newLoadout.discreteUnsortedItemSets[0].simpleChildrenTypes.length === 2,
       pickerClampAndResetTarget: clampedPicker.x === 0 && clampedPicker.z === 15360,
     },
@@ -352,7 +365,8 @@
     report.tools.spawnableBlockCount === 3 && report.tools.spawnableItemCount === 5 &&
     report.tools.spawnableUnchangedByteExact &&
     report.tools.spawnableChangedPreservesStructure &&
-    report.tools.loadoutNoopByteExact &&
+    report.tools.loadoutLegacySchemaMigrated &&
+    report.tools.loadoutValidNoopByteExact &&
     report.tools.loadoutTargetedMergePreservesRichData &&
     report.tools.newLoadoutValid && report.tools.pickerClampAndResetTarget;
   document.querySelector("#result").textContent = JSON.stringify(report, null, 2);

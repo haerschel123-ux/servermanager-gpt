@@ -5,7 +5,12 @@
 function attrs() { return { healthMin: 0.5, healthMax: 1, quantityMin: -1, quantityMax: -1 }; }
 function dset(itemType, simple = [], complex = []) {
   return { itemType, spawnWeight: 1, attributes: attrs(), quickBarSlot: -1,
-    simpleChildrenTypes: simple, complexChildrenSets: complex };
+    simpleChildrenUseDefaultAttributes: false,
+    simpleChildrenTypes: simple, complexChildrenTypes: complex };
+}
+function cset(itemType, simple = []) {
+  return { itemType, attributes: attrs(), quickBarSlot: -1,
+    simpleChildrenUseDefaultAttributes: false, simpleChildrenTypes: simple };
 }
 function slot(slotName, sets) { return { slotName, discreteItemSets: sets }; }
 
@@ -14,7 +19,7 @@ const SAMPLE_LOADOUTS = [
     id: 'sample_fresh', name: 'Fresh Spawn Basics', username: 'Example', sample: true,
     created_at: '2026-01-10T12:00:00Z', updated_at: '2026-01-10T12:00:00Z', downloads: 42,
     data: {
-      version: 1, name: 'Fresh Spawn Basics', spawnWeight: 1, characterTypes: [],
+      name: 'Fresh Spawn Basics', spawnWeight: 1, characterTypes: [],
       attachmentSlotItemSets: [
         slot('Body', [dset('TShirt_Red')]),
         slot('Legs', [dset('Jeans_Blue')]),
@@ -23,7 +28,8 @@ const SAMPLE_LOADOUTS = [
       ],
       discreteUnsortedItemSets: [{
         name: 'Extra items', spawnWeight: 1, attributes: attrs(),
-        simpleChildrenTypes: ['BandageDressing', 'Apple', 'Rag'], complexChildrenSets: []
+        simpleChildrenUseDefaultAttributes: false,
+        simpleChildrenTypes: ['BandageDressing', 'Apple', 'Rag'], complexChildrenTypes: []
       }]
     }
   },
@@ -31,9 +37,9 @@ const SAMPLE_LOADOUTS = [
     id: 'sample_hunter', name: 'Chernarus Hunter', username: 'Example', sample: true,
     created_at: '2026-01-11T12:00:00Z', updated_at: '2026-01-11T12:00:00Z', downloads: 27,
     data: {
-      version: 1, name: 'Chernarus Hunter', spawnWeight: 1, characterTypes: [],
+      name: 'Chernarus Hunter', spawnWeight: 1, characterTypes: [],
       attachmentSlotItemSets: [
-        slot('Shoulder', [dset('Mosin9130', ['PUScopeOptic'])]),
+        slot('shoulderL', [dset('Mosin9130', ['PUScopeOptic'])]),
         slot('Body', [dset('M65Jacket_Black')]),
         slot('Vest', [dset('HuntingVest')]),
         slot('Legs', [dset('HunterPants_Brown')]),
@@ -42,7 +48,8 @@ const SAMPLE_LOADOUTS = [
       ],
       discreteUnsortedItemSets: [{
         name: 'Extra items', spawnWeight: 1, attributes: attrs(),
-        simpleChildrenTypes: ['Ammo_762x54', 'Canteen', 'HuntingKnife', 'Matchbox'], complexChildrenSets: []
+        simpleChildrenUseDefaultAttributes: false,
+        simpleChildrenTypes: ['Ammo_762x54', 'Canteen', 'HuntingKnife', 'Matchbox'], complexChildrenTypes: []
       }]
     }
   },
@@ -50,9 +57,9 @@ const SAMPLE_LOADOUTS = [
     id: 'sample_military', name: 'Military Assault', username: 'Example', sample: true,
     created_at: '2026-01-12T12:00:00Z', updated_at: '2026-01-12T12:00:00Z', downloads: 63,
     data: {
-      version: 1, name: 'Military Assault', spawnWeight: 1, characterTypes: [],
+      name: 'Military Assault', spawnWeight: 1, characterTypes: [],
       attachmentSlotItemSets: [
-        slot('Shoulder', [dset('AKM', ['KobraOptic'], [dset('Mag_AKM_30Rnd', ['Ammo_762x39'])])]),
+        slot('shoulderL', [dset('AKM', ['KobraOptic'], [cset('Mag_AKM_30Rnd', ['Ammo_762x39'])])]),
         slot('Body', [dset('GorkaEJacket_Summer')]),
         slot('Legs', [dset('GorkaPants_Summer')]),
         slot('Vest', [dset('PlateCarrierVest')]),
@@ -63,8 +70,9 @@ const SAMPLE_LOADOUTS = [
       ],
       discreteUnsortedItemSets: [{
         name: 'Extra items', spawnWeight: 1, attributes: attrs(),
+        simpleChildrenUseDefaultAttributes: false,
         simpleChildrenTypes: ['BandageDressing', 'Ammo_762x39'],
-        complexChildrenSets: [dset('Mag_AKM_30Rnd', ['Ammo_762x39'])]
+        complexChildrenTypes: [cset('Mag_AKM_30Rnd', ['Ammo_762x39'])]
       }]
     }
   }
@@ -249,7 +257,7 @@ class LoadoutBrowser {
       if (d && d.discreteUnsortedItemSets && Array.isArray(d.discreteUnsortedItemSets)) {
         d.discreteUnsortedItemSets.forEach(us => {
           if (!us) return;
-          const complex = us.complexChildrenSets || us.complexChildrenTypes;
+          const complex = us.complexChildrenTypes || us.complexChildrenSets;
           if (complex && Array.isArray(complex)) {
             complex.forEach(c => {
               if (typeof c === 'object' && c && c.itemType) items.push(this.formatItemName(c.itemType));
@@ -327,9 +335,11 @@ class LoadoutBrowser {
     const blob = new Blob([JSON.stringify(loadout.data, null, 2)], { type: 'application/json' });
     const fileName = (loadout.name || 'loadout').replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.json';
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    const objectUrl = URL.createObjectURL(blob);
+    a.href = objectUrl;
     a.download = fileName;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
     this.bumpDownloads(id);
     UIManager.showNotification('Loadout downloaded successfully', 'success');
   }

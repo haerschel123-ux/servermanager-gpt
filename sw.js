@@ -1,7 +1,7 @@
 "use strict";
 
 const CACHE_PREFIX = "servermanager-gpt-dayz-manager-";
-const CACHE = CACHE_PREFIX + "v3";
+const CACHE = CACHE_PREFIX + "v4";
 const SHELL = [
   "./", "index.html", "style.css", "app.js", "direct.js", "map.js",
   "editor.js", "tools.js", "manifest.webmanifest", "icon.svg",
@@ -10,7 +10,7 @@ const SHELL = [
   "vendor/leaflet/images/layers.png", "vendor/leaflet/images/layers-2x.png",
   "loadout/", "loadout/index.html", "loadout/about.html",
   "loadout/browse-loadouts.html", "loadout/generator.js",
-  "loadout/loadout.css", "loadout/data.js", "loadout/browse.js",
+  "loadout/loadout.css", "loadout/data.js", "loadout/slot-data.js", "loadout/browse.js",
   "loadout/vendor/bootstrap.min.css",
   "loadout/vendor/bootstrap.bundle.min.js",
   "loadout/vendor/sweetalert2.min.css",

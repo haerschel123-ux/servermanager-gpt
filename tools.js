@@ -1076,21 +1076,25 @@ ${kids}
   /* ------------------------------------------------ 1. Loadout Generator */
 
   const SLOTS = [
-    ["Shoulder", "Schulterwaffe"], ["Melee", "Nahkampfwaffe"],
-    ["Hands", "In den Händen"], ["Headgear", "Kopfbedeckung"],
-    ["Mask", "Maske"], ["Eyewear", "Brille"], ["Gloves", "Handschuhe"],
-    ["Armband", "Armbinde"], ["Body", "Oberteil"], ["Vest", "Weste"],
-    ["Back", "Rucksack"], ["Hips", "Gürtel"], ["Legs", "Hose"],
-    ["Feet", "Schuhe"],
+    ["shoulderL", "Linke Schulter"], ["shoulderR", "Rechte Schulter"],
+    ["Hands", "Hände"], ["Headgear", "Kopfbedeckung"], ["Mask", "Maske"],
+    ["Eyewear", "Brille"], ["Gloves", "Handschuhe"], ["Armband", "Armband"],
+    ["Body", "Oberteil"], ["Vest", "Weste"], ["Back", "Rucksack"],
+    ["Hips", "Gürtel"], ["Legs", "Hose"], ["Feet", "Schuhe"],
   ];
 
   const LOADOUT_HEALTH_VALUES = ["0.7,1.0", "0.3,0.7", "0.1,1.0"];
   const jsonClone = (value) => JSON.parse(JSON.stringify(value));
   const asArray = (value) => Array.isArray(value) ? value : [];
+  const LOADOUT_SLOT_ALIASES = Object.freeze({
+    Shoulder: "shoulderL", Melee: "shoulderR", Bow: "shoulderR",
+  });
+  const canonicalLoadoutSlot = (slotName) => LOADOUT_SLOT_ALIASES[slotName] || slotName;
 
   function firstLoadoutSlotSet(preset, slotName) {
     return asArray(preset && preset.attachmentSlotItemSets)
-      .find((set) => set && typeof set === "object" && set.slotName === slotName) || null;
+      .find((set) => set && typeof set === "object" &&
+        canonicalLoadoutSlot(set.slotName) === slotName) || null;
   }
 
   function firstLoadoutItemSet(slotSet) {
@@ -1173,7 +1177,8 @@ ${kids}
   function defaultLoadoutItemSet(itemType, health) {
     return {
       itemType, spawnWeight: 1, attributes: defaultLoadoutAttributes(health),
-      quickBarSlot: -1, simpleChildrenTypes: [], complexChildrenSets: [],
+      quickBarSlot: -1, simpleChildrenUseDefaultAttributes: false,
+      simpleChildrenTypes: [], complexChildrenTypes: [],
     };
   }
 
@@ -1182,7 +1187,7 @@ ${kids}
       preset.attachmentSlotItemSets = [];
     const slots = preset.attachmentSlotItemSets;
     const index = slots.findIndex((set) =>
-      set && typeof set === "object" && set.slotName === slotName);
+      set && typeof set === "object" && canonicalLoadoutSlot(set.slotName) === slotName);
     if (!itemType) {
       if (index < 0) return;
       const slotSet = slots[index];
@@ -1196,6 +1201,7 @@ ${kids}
       return;
     }
     const slotSet = slots[index];
+    slotSet.slotName = slotName;
     if (!Array.isArray(slotSet.discreteItemSets)) slotSet.discreteItemSets = [];
     const first = slotSet.discreteItemSets[0];
     if (first && typeof first === "object" && !Array.isArray(first)) {
@@ -1261,7 +1267,8 @@ ${kids}
       target = {
         name: "Startitems", spawnWeight: 1,
         attributes: defaultLoadoutAttributes(health),
-        simpleChildrenTypes: [], complexChildrenSets: [],
+        simpleChildrenUseDefaultAttributes: false,
+        simpleChildrenTypes: [], complexChildrenTypes: [],
       };
       sets.push(target);
     }
@@ -1281,14 +1288,73 @@ ${kids}
     };
   }
 
+  function normalizeLoadoutSchema(preset) {
+    let changed = false;
+    const removeVersion = Object.prototype.hasOwnProperty.call(preset, "version");
+    if (removeVersion) {
+      delete preset.version;
+      changed = true;
+    }
+
+    const normalizeWeight = (holder) => {
+      if (!holder || typeof holder !== "object" || holder.spawnWeight == null) return;
+      const weight = Math.max(1, Math.round(num(holder.spawnWeight, 1)));
+      if (holder.spawnWeight !== weight) {
+        holder.spawnWeight = weight;
+        changed = true;
+      }
+    };
+
+    const normalizeChildren = (holder) => {
+      if (!holder || typeof holder !== "object" || Array.isArray(holder)) return;
+      if (Object.prototype.hasOwnProperty.call(holder, "complexChildrenSets")) {
+        if (!Array.isArray(holder.complexChildrenTypes))
+          holder.complexChildrenTypes = asArray(holder.complexChildrenSets);
+        delete holder.complexChildrenSets;
+        changed = true;
+      }
+      for (const child of asArray(holder.complexChildrenTypes)) {
+        if (!child || typeof child !== "object" || Array.isArray(child)) continue;
+        if (Object.prototype.hasOwnProperty.call(child, "spawnWeight")) {
+          delete child.spawnWeight;
+          changed = true;
+        }
+        if (Object.prototype.hasOwnProperty.call(child, "complexChildrenSets")) {
+          delete child.complexChildrenSets;
+          changed = true;
+        }
+      }
+    };
+
+    normalizeWeight(preset);
+    for (const slotSet of asArray(preset.attachmentSlotItemSets)) {
+      if (!slotSet || typeof slotSet !== "object" || Array.isArray(slotSet)) continue;
+      const canonicalSlot = canonicalLoadoutSlot(slotSet.slotName);
+      if (canonicalSlot !== slotSet.slotName) {
+        slotSet.slotName = canonicalSlot;
+        changed = true;
+      }
+      for (const itemSet of asArray(slotSet.discreteItemSets)) {
+        normalizeWeight(itemSet);
+        normalizeChildren(itemSet);
+      }
+    }
+    for (const unsortedSet of asArray(preset.discreteUnsortedItemSets)) {
+      normalizeWeight(unsortedSet);
+      normalizeChildren(unsortedSet);
+    }
+    return changed;
+  }
+
   function updateLoadoutPreset(text, baseline, desired, fallbackPreset) {
     const changes = loadoutChanges(baseline, desired);
     const unchanged = !changes.name && !changes.health && !changes.cargo &&
                       !changes.slots.length;
-    if (unchanged && text !== null) return text;
     const preset = text !== null ? JSON.parse(text) : jsonClone(fallbackPreset);
     if (!preset || typeof preset !== "object" || Array.isArray(preset))
       throw new Error("Die Loadout-Datei enthält kein gültiges Preset.");
+    const schemaChanged = normalizeLoadoutSchema(preset);
+    if (unchanged && !schemaChanged && text !== null) return text;
     if (changes.name) preset.name = desired.name;
     for (const slotName of changes.slots)
       setLoadoutSlot(preset, slotName, desired.slots[slotName], desired.health);
@@ -1310,12 +1376,13 @@ ${kids}
     for (const [item, count] of loadoutCargoCounts(desired.cargo))
       for (let i = 0; i < count; i += 1) loose.push(item);
     return {
-      version: 1, name: desired.name, spawnWeight: 1, characterTypes: [],
+      name: desired.name, spawnWeight: 1, characterTypes: [],
       attachmentSlotItemSets: slotSets,
       discreteUnsortedItemSets: loose.length ? [{
         name: "Startitems", spawnWeight: 1,
         attributes: defaultLoadoutAttributes(desired.health),
-        simpleChildrenTypes: loose, complexChildrenSets: [],
+        simpleChildrenUseDefaultAttributes: false,
+        simpleChildrenTypes: loose, complexChildrenTypes: [],
       }] : [],
     };
   }
