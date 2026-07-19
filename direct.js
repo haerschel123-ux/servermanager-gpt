@@ -56,6 +56,12 @@ const DirectMode = (() => {
     return (data.data && data.data.entries) || [];
   }
 
+  function fileNotFound(path) {
+    const error = new Error("Datei nicht gefunden: " + path);
+    error.code = "FILE_NOT_FOUND";
+    return error;
+  }
+
   async function fileRead(path) {
     let data;
     try {
@@ -64,7 +70,7 @@ const DirectMode = (() => {
     } catch (e) {
       // Nitrado meldet fehlende Dateien als 500 "File doesn't exist (anymore?)"
       if (/doesn't exist|does not exist|no such file/i.test(e.message || ""))
-        throw new Error("Datei nicht gefunden: " + path);
+        throw fileNotFound(path);
       throw e;
     }
     const url = data.data && data.data.token && data.data.token.url;
@@ -74,8 +80,10 @@ const DirectMode = (() => {
       resp = await fetch(url);
     } catch (e) {
       throw new Error("Der Nitrado-Dateiserver blockiert den Browser-Download " +
-                      "(CORS). Bitte die PC-Version (server.py) benutzen.");
+                      "möglicherweise per CORS. Bitte erneut versuchen oder " +
+                      "einen anderen Browser verwenden.");
     }
+    if (resp.status === 404) throw fileNotFound(path);
     if (!resp.ok) throw new Error("Download fehlgeschlagen (" + resp.status + ").");
     return resp.text();
   }
@@ -97,7 +105,8 @@ const DirectMode = (() => {
       });
     } catch (e) {
       throw new Error("Der Nitrado-Dateiserver blockiert den Browser-Upload " +
-                      "(CORS). Bitte die PC-Version (server.py) benutzen.");
+                      "möglicherweise per CORS. Bitte erneut versuchen oder " +
+                      "einen anderen Browser verwenden.");
     }
     if (!resp.ok) throw new Error("Upload fehlgeschlagen (" + resp.status + ").");
   }
@@ -131,40 +140,55 @@ const DirectMode = (() => {
       });
     },
     async add(path, content) {
-      try {
-        const db = await this.open();
+      const db = await this.open();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("backups", "readwrite");
+        tx.objectStore("backups").add({ path, time: Date.now(), content });
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error("Backup wurde abgebrochen."));
+      });
+      // Alte Einträge begrenzen (max. 40) und erst danach weiterschreiben.
+      const all = await this.list();
+      if (all.length > 40) {
+        const db2 = await this.open();
         await new Promise((resolve, reject) => {
-          const tx = db.transaction("backups", "readwrite");
-          tx.objectStore("backups").add({ path, time: Date.now(), content });
-          tx.oncomplete = resolve;
-          tx.onerror = () => reject(tx.error);
-        });
-        // Alte Einträge begrenzen (max. 40)
-        const all = await this.list();
-        if (all.length > 40) {
-          const db2 = await this.open();
           const tx = db2.transaction("backups", "readwrite");
           all.slice(40).forEach((b) => tx.objectStore("backups").delete(b.id));
-        }
-      } catch (e) {
-        console.warn("Backup konnte nicht gespeichert werden:", e);
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error("Backup-Bereinigung wurde abgebrochen."));
+        });
       }
     },
     async list() {
       const db = await this.open();
       return new Promise((resolve, reject) => {
         const req = db.transaction("backups").objectStore("backups").getAll();
-        req.onsuccess = () => resolve(req.result.sort((a, b) => b.time - a.time));
+        req.onsuccess = () => resolve(req.result.sort((a, b) =>
+          b.time - a.time || b.id - a.id));
         req.onerror = () => reject(req.error);
       });
     },
   };
 
   async function backupAndWrite(path, content) {
+    let current;
     try {
-      const current = await fileRead(path);
-      await Backups.add(path, current);
-    } catch (e) { /* Datei existiert noch nicht – kein Backup nötig */ }
+      current = await fileRead(path);
+    } catch (e) {
+      // Nur eine eindeutig fehlende Datei ist eine erlaubte Neuanlage.
+      // Netzwerk-, API- und Browser-Datenbankfehler müssen den Upload stoppen.
+      if (e && e.code !== "FILE_NOT_FOUND") throw e;
+    }
+    if (current !== undefined) {
+      try {
+        await Backups.add(path, current);
+      } catch (e) {
+        throw new Error("Backup konnte nicht gespeichert werden. Der Upload wurde " +
+                        "aus Sicherheitsgründen abgebrochen: " + (e.message || e));
+      }
+    }
     await fileWrite(path, content);
   }
 
@@ -318,62 +342,239 @@ const DirectMode = (() => {
     return items;
   }
 
-  function updateTypes(text, updates) {
-    // Zuerst mit dem DOM prüfen, damit beschädigte XML nie hochgeladen wird.
-    // Danach werden ausschließlich die Textwerte der gewählten Felder im
-    // Original-String ersetzt. So bleiben Deklaration, Kommentare, Leerzeichen,
-    // Zeilenenden und alle 5.000+ unangetasteten <type>-Blöcke byte-genau gleich.
-    parseXml(text);
-    const pending = new Set(Object.keys(updates || {}));
-    const typeRe = /<type\b([^>]*)>[\s\S]*?<\/type\s*>/gi;
-    const nameRe = /\bname\s*=\s*(["'])(.*?)\1/i;
-    const patched = text.replace(typeRe, (block, attrs) => {
-      const nameMatch = nameRe.exec(attrs);
-      if (!nameMatch) return block;
-      const name = nameMatch[2];
-      const fields = updates && updates[name];
-      if (!fields) return block;
-      pending.delete(name);
-      let next = block;
-      for (const [field, value] of Object.entries(fields)) {
-        if (!TYPE_FIELDS.includes(field) || value === null) continue;
-        const fieldRe = new RegExp(
-          "(<" + field + "\\b[^>]*>)([\\s\\S]*?)(<\\/" + field + "\\s*>)", "i");
-        const numeric = String(Math.trunc(Number(value) || 0));
-        next = next.replace(fieldRe, (whole, open, oldValue, close) => {
-          const leading = (/^\s*/.exec(oldValue) || [""])[0];
-          const trailing = (/\s*$/.exec(oldValue) || [""])[0];
-          return open + leading + numeric + trailing + close;
-        });
+  function xmlTagEnd(text, start) {
+    let quote = "";
+    for (let i = start + 1; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === ">") {
+        return i;
       }
-      return next;
+    }
+    throw new Error("Datei enthält ein unvollständiges XML-Tag.");
+  }
+
+  function xmlDeclarationEnd(text, start) {
+    let quote = "", brackets = 0;
+    for (let i = start + 2; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === "[") {
+        brackets += 1;
+      } else if (ch === "]" && brackets) {
+        brackets -= 1;
+      } else if (ch === ">" && brackets === 0) {
+        return i;
+      }
+    }
+    throw new Error("Datei enthält eine unvollständige XML-Deklaration.");
+  }
+
+  /* Liefert Quellbereiche echter types/type-Knoten. Kommentare, CDATA und
+     Processing Instructions werden lexikalisch übersprungen; die Namen kommen
+     aus dem bereits validierten DOM, damit auch Entities korrekt aufgelöst sind. */
+  function scanTypeSources(text, doc) {
+    const domTypes = Array.from(doc.querySelectorAll("types > type"));
+    const sourceTypes = [];
+    const stack = [];
+
+    const addSegment = (start, end, kind) => {
+      if (end <= start) return;
+      const top = stack[stack.length - 1];
+      if (top && top.field) top.field.segments.push({ start, end, kind });
+    };
+
+    let pos = 0;
+    while (pos < text.length) {
+      const start = text.indexOf("<", pos);
+      if (start === -1) {
+        addSegment(pos, text.length, "text");
+        break;
+      }
+      addSegment(pos, start, "text");
+
+      if (text.startsWith("<!--", start)) {
+        const end = text.indexOf("-->", start + 4);
+        if (end === -1) throw new Error("Datei enthält einen unvollständigen XML-Kommentar.");
+        pos = end + 3;
+        continue;
+      }
+      if (text.startsWith("<![CDATA[", start)) {
+        const end = text.indexOf("]]>", start + 9);
+        if (end === -1) throw new Error("Datei enthält einen unvollständigen CDATA-Block.");
+        addSegment(start + 9, end, "cdata");
+        pos = end + 3;
+        continue;
+      }
+      if (text.startsWith("<?", start)) {
+        const end = text.indexOf("?>", start + 2);
+        if (end === -1) throw new Error("Datei enthält eine unvollständige Processing Instruction.");
+        pos = end + 2;
+        continue;
+      }
+      if (text.startsWith("<!", start)) {
+        pos = xmlDeclarationEnd(text, start) + 1;
+        continue;
+      }
+
+      const end = xmlTagEnd(text, start);
+      const token = text.slice(start, end + 1);
+      const closing = /^<\s*\//.test(token);
+      const match = closing
+        ? /^<\s*\/\s*([^\s>]+)/.exec(token)
+        : /^<\s*([^\s/>]+)/.exec(token);
+      if (!match) throw new Error("Datei enthält ein unbekanntes XML-Tag.");
+      const tagName = match[1];
+
+      if (closing) {
+        const element = stack.pop();
+        if (!element || element.name !== tagName)
+          throw new Error("Datei enthält falsch verschachtelte XML-Tags.");
+        pos = end + 1;
+        continue;
+      }
+
+      const parent = stack[stack.length - 1];
+      const selfClosing = /\/\s*>$/.test(token);
+      let type = null, field = null;
+      if (tagName === "type" && parent && parent.name === "types") {
+        const domNode = domTypes[sourceTypes.length];
+        if (!domNode) throw new Error("types.xml konnte nicht eindeutig dem Quelltext zugeordnet werden.");
+        type = { name: domNode.getAttribute("name") || "", fields: new Map() };
+        sourceTypes.push(type);
+      } else if (TYPE_FIELDS.includes(tagName) && parent && parent.type) {
+        field = { name: tagName, start, end: end + 1, selfClosing, segments: [] };
+        if (!parent.type.fields.has(tagName)) parent.type.fields.set(tagName, []);
+        parent.type.fields.get(tagName).push(field);
+      }
+      if (!selfClosing) stack.push({ name: tagName, type, field });
+      pos = end + 1;
+    }
+
+    if (stack.length || sourceTypes.length !== domTypes.length)
+      throw new Error("types.xml konnte nicht eindeutig dem Quelltext zugeordnet werden.");
+    return sourceTypes;
+  }
+
+  function numericSourceRange(text, field) {
+    const nonEmpty = field.segments.filter((part) => text.slice(part.start, part.end).trim());
+    if (nonEmpty.length !== 1) return null;
+    const part = nonEmpty[0];
+    const raw = text.slice(part.start, part.end);
+    const match = /^(\s*)[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(\s*)$/.exec(raw);
+    if (!match) return null;
+    return { start: part.start + match[1].length,
+             end: part.end - match[2].length };
+  }
+
+  function updateTypes(text, updates) {
+    const doc = parseXml(text);
+    const sourceTypes = scanTypeSources(text, doc);
+    const byName = new Map();
+    sourceTypes.forEach((type) => {
+      if (!byName.has(type.name)) byName.set(type.name, []);
+      byName.get(type.name).push(type);
     });
-    return { text: patched, missing: Array.from(pending) };
+
+    const missing = [], patches = [];
+    for (const [name, fields] of Object.entries(updates || {})) {
+      const matches = byName.get(name) || [];
+      if (!matches.length) {
+        missing.push(name);
+        continue;
+      }
+      if (matches.length > 1)
+        throw new Error(`types.xml enthält den Eintrag „${name}“ mehrfach. ` +
+                        "Aus Sicherheitsgründen wurde nichts gespeichert.");
+      const type = matches[0];
+      for (const [fieldName, value] of Object.entries(fields || {})) {
+        if (!TYPE_FIELDS.includes(fieldName) || value === null) continue;
+        const fieldMatches = type.fields.get(fieldName) || [];
+        if (fieldMatches.length !== 1) {
+          missing.push(name + "." + fieldName);
+          continue;
+        }
+        const number = Number(value);
+        if (!Number.isFinite(number))
+          throw new Error(`Ungültiger Zahlenwert für ${name}.${fieldName}.`);
+        const numeric = String(Math.trunc(number));
+        const field = fieldMatches[0];
+        if (field.selfClosing) {
+          const opening = text.slice(field.start, field.end);
+          const expanded = opening.replace(/\s*\/\s*>$/, ">" + numeric +
+            "</" + fieldName + ">");
+          patches.push({ start: field.start, end: field.end, value: expanded });
+          continue;
+        }
+        const range = numericSourceRange(text, field);
+        if (!range) {
+          missing.push(name + "." + fieldName);
+          continue;
+        }
+        patches.push({ ...range, value: numeric });
+      }
+    }
+
+    patches.sort((a, b) => b.start - a.start);
+    let patched = text, previousStart = text.length;
+    for (const patch of patches) {
+      if (patch.end > previousStart)
+        throw new Error("types.xml enthält überlappende Zahlenfelder.");
+      patched = patched.slice(0, patch.start) + patch.value + patched.slice(patch.end);
+      previousStart = patch.start;
+    }
+    return { text: patched, missing };
   }
 
   /* ------------------------------------------------ Objekt-Spawner-JSON */
 
+  const OBJECT_SOURCE = Symbol("mapobject-source");
+
   function parseObjects(text) {
     const data = text.trim() ? JSON.parse(text) : {};
-    return (data.Objects || []).map((obj) => ({
-      name: obj.name || "",
-      x: Number((obj.pos || [])[0]) || 0,
-      y: Number((obj.pos || [])[1]) || 0,
-      z: Number((obj.pos || [])[2]) || 0,
-      yaw: Number((obj.ypr || [])[0]) || 0,
-    }));
+    return (data.Objects || []).map((raw) => {
+      const obj = raw && typeof raw === "object" ? raw : {};
+      const parsed = {
+        name: obj.name || "",
+        x: Number((obj.pos || [])[0]) || 0,
+        y: Number((obj.pos || [])[1]) || 0,
+        z: Number((obj.pos || [])[2]) || 0,
+        yaw: Number((obj.ypr || [])[0]) || 0,
+      };
+      Object.defineProperty(parsed, OBJECT_SOURCE, { value: obj });
+      return parsed;
+    });
   }
 
   function writeObjects(objects) {
     return JSON.stringify({
-      Objects: objects.filter((o) => (o.name || "").trim()).map((o) => ({
-        name: o.name.trim(),
-        pos: [Math.round(o.x * 1000) / 1000, Math.round(o.y * 1000) / 1000,
-              Math.round(o.z * 1000) / 1000],
-        ypr: [Math.round((o.yaw || 0) * 10) / 10, 0, 0],
-        scale: 1.0,
-        enableCEPersistency: 0,
-      })),
+      Objects: objects.filter((o) => (o.name || "").trim()).map((o) => {
+        const source = o[OBJECT_SOURCE] && typeof o[OBJECT_SOURCE] === "object"
+          ? o[OBJECT_SOURCE]
+          : Object.fromEntries(Object.entries(o).filter(([key]) =>
+              !["x", "y", "z", "yaw"].includes(key)));
+        const originalYpr = Array.isArray(source.ypr) ? source.ypr : [];
+        const ypr = originalYpr.slice();
+        while (ypr.length < 3) ypr.push(0);
+        ypr[0] = Math.round((o.yaw || 0) * 10) / 10;
+        const result = {
+          ...source,
+          name: o.name.trim(),
+          pos: [Math.round(o.x * 1000) / 1000, Math.round(o.y * 1000) / 1000,
+                Math.round(o.z * 1000) / 1000],
+          ypr,
+        };
+        if (!Object.prototype.hasOwnProperty.call(source, "scale")) result.scale = 1.0;
+        if (!Object.prototype.hasOwnProperty.call(source, "enableCEPersistency"))
+          result.enableCEPersistency = 0;
+        return result;
+      }),
     }, null, 4) + "\n";
   }
 
@@ -390,28 +591,49 @@ const DirectMode = (() => {
 
   /* ------------------------------------------------------------- Setup */
 
-  /* Alle Missionsordner (dayzOffline.*) finden. Sie liegen als Geschwister
-     im selben missions-Ordner, deshalb endet die Suche beim ersten Fund. */
+  /* Alle Missionsordner über sämtliche Zweige bis zur Tiefengrenze sammeln.
+     Der reine Helfer ist ohne Netzwerk testbar; doppelte Pfade und Zyklen
+     werden abgefangen. */
+  async function collectMissionDirs(start, depth, listDir) {
+    const found = [], foundSet = new Set(), visited = new Set();
+    const visit = async (dir, remaining) => {
+      const key = String(dir || "").replace(/\/+$/, "");
+      if (visited.has(key)) return;
+      visited.add(key);
+      let entries;
+      try {
+        entries = await listDir(dir);
+      } catch (e) {
+        return;
+      }
+      const dirs = (entries || []).filter((entry) => entry.type === "dir");
+      dirs.sort((a, b) => {
+        const aMission = /missions/i.test(a.name || "") ? 0 : 1;
+        const bMission = /missions/i.test(b.name || "") ? 0 : 1;
+        return aMission - bMission || String(a.name || "").localeCompare(String(b.name || ""));
+      });
+      const descend = [];
+      for (const entry of dirs) {
+        const path = entry.path || (String(dir).replace(/\/$/, "") + "/" + entry.name);
+        if (/^dayzOffline\./i.test(entry.name || "")) {
+          if (!foundSet.has(path)) {
+            foundSet.add(path);
+            found.push(path);
+          }
+        } else {
+          descend.push(path);
+        }
+      }
+      if (remaining <= 0) return;
+      for (const path of descend) await visit(path, remaining - 1);
+    };
+    await visit(start, Math.max(0, Math.trunc(Number(depth) || 0)));
+    return found;
+  }
+
   async function findMissionDirs(token, serviceId, start, depth) {
-    let entries;
-    try {
-      entries = await fileList(token, serviceId, start);
-    } catch (e) {
-      return [];
-    }
-    const dirs = entries.filter((e) => e.type === "dir");
-    const found = dirs
-      .filter((e) => (e.name || "").startsWith("dayzOffline."))
-      .map((e) => e.path || (start.replace(/\/$/, "") + "/" + e.name));
-    if (found.length) return found;
-    if (depth <= 0) return [];
-    dirs.sort((a, b) => (a.name.includes("missions") ? -1 : 0) - (b.name.includes("missions") ? -1 : 0));
-    for (const entry of dirs) {
-      const path = entry.path || (start.replace(/\/$/, "") + "/" + entry.name);
-      const deeper = await findMissionDirs(token, serviceId, path, depth - 1);
-      if (deeper.length) return deeper;
-    }
-    return [];
+    return collectMissionDirs(start, depth,
+      (dir) => fileList(token, serviceId, dir));
   }
 
   /* Karten-Schlüssel (chernarusplus/enoch/sakhal) aus einem Missionspfad */
@@ -576,21 +798,32 @@ const DirectMode = (() => {
         const query = (q.q || "").trim().toLowerCase();
         if (query.length < 2) throw new Error("Bitte mindestens 2 Zeichen eingeben.");
         const results = [];
-        const stack = [[cfg.root_dir, 0]];
+        const stack = [cfg.root_dir];
+        const queued = new Set(stack);
         let visited = 0;
         while (stack.length && results.length < 200 && visited < 400) {
-          const [dir, depth] = stack.pop();
+          const dir = stack.pop();
           visited += 1;
           let entries;
           try {
             entries = await call("/api/files?dir=" + encodeURIComponent(dir));
           } catch (e) { continue; }
           for (const entry of entries.entries) {
-            if (entry.name.toLowerCase().includes(query)) results.push(entry);
-            if (entry.type === "dir" && depth < 6) stack.push([entry.path, depth + 1]);
+            if (entry.name.toLowerCase().includes(query)) {
+              if (results.length >= 200) break;
+              results.push(entry);
+            }
+            if (entry.type === "dir" && !queued.has(entry.path)) {
+              queued.add(entry.path);
+              stack.push(entry.path);
+            }
           }
         }
-        return { results };
+        return {
+          results,
+          visited,
+          truncated: stack.length > 0 || results.length >= 200 || visited >= 400,
+        };
       }
 
       case "/api/map/data": {
@@ -704,7 +937,7 @@ const DirectMode = (() => {
       return;
     }
     container.innerHTML = "";
-    list.slice(0, 25).forEach((backup) => {
+    list.slice(0, 40).forEach((backup) => {
       const row = document.createElement("div");
       const name = backup.path.split("/").pop();
       const when = new Date(backup.time).toLocaleString("de-DE");
@@ -723,7 +956,7 @@ const DirectMode = (() => {
     // Für automatische Tests zugänglich:
     _test: { parsePlayerspawns, writePlayerspawns, parseEventspawns,
              writeEventspawns, parseTypes, updateTypes, parseObjects,
-             writeObjects, ensureObjectSpawner },
+             writeObjects, ensureObjectSpawner, collectMissionDirs },
   };
 })();
 

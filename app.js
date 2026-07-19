@@ -11,13 +11,10 @@ const App = {
 window.App = App;
 
 /* ------------------------------------------------------------------ API
- * Zwei Betriebsarten:
- *  - "server": Seite kommt vom lokalen Python-Server (server.py auf dem PC)
- *  - "direct": Seite ist statisch gehostet (GitHub Pages / Handy pur) und
- *              spricht die Nitrado-API direkt aus dem Browser an (direct.js)
- */
+ * Die App ist vollständig statisch. Alle Funktionen laufen über direct.js;
+ * dort spricht ausschließlich der Browser mit der Nitrado-API. */
 
-let apiMode = "server";
+const apiMode = "direct";
 let pendingRequests = 0;
 
 function setLoading(delta) {
@@ -26,30 +23,10 @@ function setLoading(delta) {
   if (indicator) indicator.classList.toggle("hidden", pendingRequests === 0);
 }
 
-async function detectApiMode() {
-  try {
-    const resp = await fetch("api/state");
-    if (resp.ok) {
-      const data = await resp.json();
-      if (typeof data.configured === "boolean") return "server";
-    }
-  } catch (e) { /* kein lokaler Server – statisch gehostet */ }
-  return "direct";
-}
-
 async function api(path, body) {
   setLoading(1);
   try {
-    if (apiMode === "direct") return await DirectMode.call(path, body);
-    const opts = body === undefined
-      ? {}
-      : { method: "POST", body: JSON.stringify(body),
-          headers: { "Content-Type": "application/json" } };
-    const resp = await fetch(path, opts);
-    let data = {};
-    try { data = await resp.json(); } catch (e) { /* leere Antwort */ }
-    if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
-    return data;
+    return await DirectMode.call(path, body);
   } finally {
     setLoading(-1);
   }
@@ -109,6 +86,21 @@ $("#btn-setup-back").addEventListener("click", () => {
   $("#setup-step1").classList.remove("hidden");
 });
 
+function hasUnsavedServerState() {
+  return !!((window.Files && Files.isDirty()) ||
+    (window.DayZMap && DayZMap.dirty) ||
+    Object.keys(Loot.changes || {}).length ||
+    (window.Tools && Tools.hasStaged && Tools.hasStaged()));
+}
+window.hasUnsavedServerState = hasUnsavedServerState;
+
+function resetServerScopedState() {
+  if (window.Files && Files.reset) Files.reset();
+  if (window.DayZMap) DayZMap.setDirty(false);
+  Loot.reset();
+  if (window.Tools && Tools.onServerChanged) Tools.onServerChanged();
+}
+
 $("#btn-setup-next").addEventListener("click", async () => {
   const token = $("#setup-token").value.trim();
   if (!token) return setupError("Bitte zuerst den API-Token einfügen.");
@@ -145,8 +137,10 @@ async function selectService(id) {
   $("#setup-error").classList.add("hidden");
   try {
     toast("Verbinde… suche Missionsordner auf dem Server…");
-    App.state = await api("/api/setup/select",
+    const nextState = await api("/api/setup/select",
       { token: App.setupToken, service_id: id });
+    App.state = nextState;
+    resetServerScopedState();
     App.setupToken = "";
     $("#setup-token").value = "";
     $("#setup-overlay").classList.add("hidden");
@@ -170,6 +164,9 @@ $("#btn-settings-save").addEventListener("click", async () => {
 });
 
 $("#btn-server-change").addEventListener("click", () => {
+  if (hasUnsavedServerState() &&
+      !confirm("Es gibt ungespeicherte Änderungen für den aktuellen Server. " +
+               "Trotzdem einen anderen Server auswählen?")) return;
   $("#setup-settings").classList.add("hidden");
   $("#setup-step2").classList.add("hidden");
   $("#setup-step1").classList.remove("hidden");
@@ -227,6 +224,15 @@ const Loot = {
   loaded: false,
   items: [],
   changes: {},   // {name: {feld: wert}}
+
+  reset() {
+    this.loaded = false;
+    this.items = [];
+    this.changes = {};
+    $("#loot-search").value = "";
+    $("#loot-table tbody").innerHTML = "";
+    this.updateBar();
+  },
 
   async load() {
     try {
@@ -372,11 +378,10 @@ $("#btn-install-close").addEventListener("click", () => {
 });
 
 async function init() {
-  apiMode = await detectApiMode();
   try {
     App.state = await api("/api/state");
   } catch (err) {
-    toast("Backend nicht erreichbar: " + err.message, "error");
+    toast("App konnte nicht gestartet werden: " + err.message, "error");
     return;
   }
   if (window.DayZMap) DayZMap.create();
@@ -395,3 +400,8 @@ async function init() {
 }
 
 window.addEventListener("DOMContentLoaded", init);
+window.addEventListener("beforeunload", (event) => {
+  if (!hasUnsavedServerState()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});

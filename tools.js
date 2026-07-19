@@ -5,8 +5,9 @@
  * (lädt jede Datei frisch, wendet alle vorgemerkten Transformationen an und
  * schreibt sie mit automatischem Backup über /api/file zurück).
  *
- * Alles läuft über api() aus app.js und funktioniert damit im PC-Modus wie
- * im Handy-Direktmodus identisch.
+ * Die App läuft rein statisch im Browser. api() aus app.js reicht Datei- und
+ * Serverzugriffe an den browserseitigen Nitrado-Direktmodus weiter; ein
+ * eigenes Backend gibt es nicht.
  */
 "use strict";
 
@@ -68,12 +69,18 @@ const Tools = (() => {
 
   /* ===================================================== XML-Werkzeuge */
 
-  /* Nur noch zum LESEN (Event-Vorlagen, Vorbelegungen) – geschrieben wird
-     unten per chirurgischem Text-Edit. */
+  /* Zum Lesen, Vorbelegen und zur abschließenden Validierung. Geschrieben wird
+     unten per chirurgischem Text-Edit; vor Vorschau und Upload muss das
+     Ergebnis trotzdem ein vollständig gültiges XML-Dokument sein. */
   function parseXml(text) {
     const doc = new DOMParser().parseFromString(text, "text/xml");
     if (doc.querySelector("parsererror")) throw new Error("Datei enthält fehlerhaftes XML.");
     return doc;
+  }
+
+  function validateGeneratedFile(path, text) {
+    if (/\.xml$/i.test(path)) parseXml(text);
+    if (/\.json$/i.test(path)) JSON.parse(text);
   }
 
   /* ------------------------------------ Chirurgische Text-Edits (XML) --
@@ -128,6 +135,182 @@ const Tools = (() => {
 
   const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  function findElementByName(root, selector, name) {
+    return Array.from(root.querySelectorAll(selector))
+      .find((el) => el.getAttribute("name") === name) || null;
+  }
+
+  /* Bereich eines direkten XML-Kindes im Originaltext finden. Damit lassen
+     sich einzelne Event-Felder aktualisieren, ohne den restlichen Event-Block
+     (Kommentare, unbekannte Felder/Attribute und Formatierung) neu zu bauen. */
+  function findDirectChildRange(block, parentTag, childTag) {
+    const tagRe = /<!--[^]*?-->|<!\[CDATA\[[^]*?\]\]>|<\?[^]*?\?>|<\/?\s*([A-Za-z_][\w:.-]*)\b(?:"[^"]*"|'[^']*'|[^'"<>])*?>/g;
+    const stack = [];
+    let target = null;
+    for (const match of block.matchAll(tagRe)) {
+      const name = match[1];
+      if (!name) continue;
+      const token = match[0];
+      const closing = /^<\s*\//.test(token);
+      if (closing) {
+        if (target && stack.length === 2 && stack[0] === parentTag &&
+            stack[1] === childTag && name === childTag) {
+          return { ...target, closeStart: match.index,
+                   end: match.index + token.length, selfClosing: false };
+        }
+        stack.pop();
+        continue;
+      }
+      const selfClosing = /\/\s*>$/.test(token);
+      if (stack.length === 1 && stack[0] === parentTag && name === childTag) {
+        const range = { start: match.index, startTagEnd: match.index + token.length,
+                        end: match.index + token.length, selfClosing };
+        if (selfClosing) return range;
+        target = range;
+      }
+      if (!selfClosing) stack.push(name);
+    }
+    return null;
+  }
+
+  function directChildIndent(block, parentTag) {
+    const open = new RegExp("<" + parentTag + "(?=[\\s>])[^>]*>").exec(block);
+    if (!open) return "        ";
+    const tail = block.slice(open.index + open[0].length);
+    const existing = /^\r?\n([ \t]+)</.exec(tail);
+    if (existing) return existing[1];
+    const lineStart = block.lastIndexOf("\n", open.index) + 1;
+    const parentIndent = (/^[ \t]*/.exec(block.slice(lineStart, open.index)) || [""])[0];
+    return parentIndent + "    ";
+  }
+
+  function insertDirectChild(block, parentTag, snippet) {
+    const open = new RegExp("<" + parentTag + "(?=[\\s>])[^>]*>").exec(block);
+    if (!open) return block;
+    const nl = eol(block);
+    const at = open.index + open[0].length;
+    return block.slice(0, at) + nl + directChildIndent(block, parentTag) + snippet +
+           block.slice(at);
+  }
+
+  function replaceDirectChildText(block, parentTag, childTag, value) {
+    const range = findDirectChildRange(block, parentTag, childTag);
+    if (!range) return insertDirectChild(block, parentTag,
+      "<" + childTag + ">" + escXml(value) + "</" + childTag + ">");
+    if (range.selfClosing) {
+      const open = block.slice(range.start, range.end).replace(/\s*\/>$/, ">");
+      return block.slice(0, range.start) + open + escXml(value) +
+             "</" + childTag + ">" + block.slice(range.end);
+    }
+    return block.slice(0, range.startTagEnd) + escXml(value) +
+           block.slice(range.closeStart);
+  }
+
+  function setXmlAttribute(tag, attribute, value) {
+    const re = new RegExp("(\\s" + escRe(attribute) + "\\s*=\\s*)([\\\"'])([^\\\"']*)\\2");
+    if (re.test(tag)) return tag.replace(re,
+      (_all, prefix, quote) => prefix + quote + escXml(value) + quote);
+    return tag.replace(/(\s*\/?>)$/, " " + attribute + "=\"" + escXml(value) + "\"$1");
+  }
+
+  const EVENT_FIELDS = ["nominal", "min", "max", "lifetime", "restock",
+    "saferadius", "distanceradius", "cleanupradius", "position", "limit", "active"];
+  const EVENT_DEFAULTS = {
+    nominal: 1, min: 1, max: 1, lifetime: 1800, restock: 0,
+    saferadius: 500, distanceradius: 500, cleanupradius: 1000,
+    position: "fixed", limit: "custom", active: 1,
+  };
+  const EVENT_FLAG_DEFAULTS = { deletable: 0, init_random: 0, remove_damaged: 1 };
+
+  function eventDefinitionFromElement(ev) {
+    const read = (field) => {
+      const node = Array.from(ev.children).find((el) => el.localName === field);
+      const fallback = EVENT_DEFAULTS[field];
+      if (!node) return fallback;
+      return typeof fallback === "number" ? num(node.textContent, fallback)
+                                           : node.textContent.trim();
+    };
+    const flagNode = Array.from(ev.children).find((el) => el.localName === "flags");
+    const flags = {};
+    for (const [name, fallback] of Object.entries(EVENT_FLAG_DEFAULTS)) {
+      const raw = flagNode && flagNode.getAttribute(name);
+      flags[name] = raw === null || raw === undefined ? fallback : num(raw, fallback);
+    }
+    const childrenNode = Array.from(ev.children).find((el) => el.localName === "children");
+    const children = childrenNode ? Array.from(childrenNode.children)
+      .filter((el) => el.localName === "child").map((child) => ({
+        type: child.getAttribute("type") || "",
+        max: num(child.getAttribute("max"), 1),
+        min: num(child.getAttribute("min"), 1),
+        lootmax: num(child.getAttribute("lootmax"), 0),
+        lootmin: num(child.getAttribute("lootmin"), 0),
+      })) : [];
+    return {
+      name: ev.getAttribute("name") || "",
+      ...Object.fromEntries(EVENT_FIELDS.map((field) => [field, read(field)])),
+      flags, children,
+    };
+  }
+
+  function parseEventDefinition(text, name) {
+    const doc = parseXml(text);
+    const ev = findElementByName(doc, "events > event", name);
+    return ev ? eventDefinitionFromElement(ev) : null;
+  }
+
+  const eventChildrenKey = (children) => JSON.stringify((children || []).map((child) => ({
+    type: String(child.type || ""), max: Number(child.max), min: Number(child.min),
+    lootmax: Number(child.lootmax), lootmin: Number(child.lootmin),
+  })));
+
+  function replaceEventChildren(block, children) {
+    const range = findDirectChildRange(block, "event", "children");
+    const nl = eol(block);
+    const parentIndent = directChildIndent(block, "event");
+    const childIndent = parentIndent + "    ";
+    const lines = (children || []).map((child) => childIndent +
+      `<child lootmax="${child.lootmax ?? 0}" lootmin="${child.lootmin ?? 0}" ` +
+      `max="${child.max}" min="${child.min}" type="${escXml(child.type)}"/>`).join(nl);
+    const snippet = "<children>" + (lines ? nl + lines : "") + nl +
+                    parentIndent + "</children>";
+    if (!range) return insertDirectChild(block, "event", snippet);
+    return block.slice(0, range.start) + snippet + block.slice(range.end);
+  }
+
+  /* Beim Bearbeiten einer geladenen Vorlage nur wirklich geänderte Werte im
+     frisch gelesenen Servertext anfassen. Unbekannte/zusätzliche Felder und
+     Flag-Attribute bleiben dadurch erhalten. */
+  function updateEventTemplate(text, loadedName, def, baseline) {
+    if (!loadedName || def.name !== loadedName || !baseline)
+      return upsertEvent(text, def);
+    const found = findNamedBlock(text, "event", loadedName);
+    if (!found) return upsertEvent(text, def);
+    let block = found.block;
+    for (const field of EVENT_FIELDS) {
+      if (String(def[field]) !== String(baseline[field]))
+        block = replaceDirectChildText(block, "event", field, def[field]);
+    }
+    const changedFlags = Object.keys(EVENT_FLAG_DEFAULTS)
+      .filter((name) => Number(def.flags[name]) !== Number(baseline.flags[name]));
+    if (changedFlags.length) {
+      const range = findDirectChildRange(block, "event", "flags");
+      if (!range) {
+        const values = { ...EVENT_FLAG_DEFAULTS, ...def.flags };
+        block = insertDirectChild(block, "event",
+          `<flags deletable="${values.deletable}" init_random="${values.init_random}" ` +
+          `remove_damaged="${values.remove_damaged}"/>`);
+      } else {
+        let opening = block.slice(range.start, range.startTagEnd);
+        for (const name of changedFlags)
+          opening = setXmlAttribute(opening, name, def.flags[name]);
+        block = block.slice(0, range.start) + opening + block.slice(range.startTagEnd);
+      }
+    }
+    if (eventChildrenKey(def.children) !== eventChildrenKey(baseline.children))
+      block = replaceEventChildren(block, def.children);
+    return text.slice(0, found.start) + block + text.slice(found.end);
+  }
 
   /* events.xml: Event komplett anlegen/ersetzen */
   function upsertEvent(text, def) {
@@ -235,15 +418,114 @@ ${kids}
     return text.slice(0, ctx.found.start) + block + text.slice(ctx.found.end);
   }
 
-  /* cfgspawnabletypes.xml: <type>-Eintrag anlegen/ersetzen.
-     rows: [{kind:"attachments"|"cargo", item, chance(0-1)}] */
+  const chanceText = (value) => Math.max(0, Math.min(1, Number(value) || 0)).toFixed(2);
+
+  function spawnableDefinitionFromElement(typeNode) {
+    const blocks = Array.from(typeNode.children)
+      .filter((block) => block.localName === "attachments" || block.localName === "cargo")
+      .map((block) => ({
+        kind: block.localName,
+        chance: num(block.getAttribute("chance"), 1),
+        items: Array.from(block.children).filter((item) => item.localName === "item")
+          .map((item) => ({
+            name: item.getAttribute("name") || "",
+            chance: num(item.getAttribute("chance"), 1),
+          })),
+      }));
+    return { name: typeNode.getAttribute("name") || "", blocks };
+  }
+
+  function parseSpawnableType(text, name) {
+    const doc = parseXml(text);
+    const typeNode = findElementByName(doc, "spawnabletypes > type", name);
+    return typeNode ? spawnableDefinitionFromElement(typeNode) : null;
+  }
+
+  const spawnableBlocksKey = (blocks) => JSON.stringify((blocks || []).map((block) => ({
+    kind: block.kind,
+    chance: Number(block.chance),
+    items: (block.items || []).map((item) => ({
+      name: String(item.name || ""), chance: Number(item.chance),
+    })),
+  })));
+
+  function renderSpawnableType(name, blocks) {
+    const body = (blocks || []).map((block) => {
+      const items = (block.items || []).map((item) =>
+        `            <item name="${escXml(item.name)}" chance="${chanceText(item.chance)}"/>`)
+        .join("\n");
+      return `        <${block.kind} chance="${chanceText(block.chance)}">\n${items}\n` +
+             `        </${block.kind}>`;
+    }).join("\n");
+    return `<type name="${escXml(name)}">\n${body}\n    </type>`;
+  }
+
+  function upsertSpawnableTypeBlocks(text, name, blocks) {
+    return upsertNamedBlock(text, "spawnabletypes", "type", name,
+                            renderSpawnableType(name, blocks));
+  }
+
+  /* Bestehende Aufrufer übergeben eine flache Zeile je Block. Die
+     vollständig strukturierte Variante oben behält zusätzlich mehrere Items
+     innerhalb desselben attachments-/cargo-Blocks bei. */
   function upsertSpawnableType(text, name, rows) {
-    const blocks = rows.map((r) =>
-      `        <${r.kind} chance="${(Number(r.chance) || 0).toFixed(2)}">\n` +
-      `            <item name="${escXml(r.item)}" chance="1.00"/>\n` +
-      `        </${r.kind}>`).join("\n");
-    const snippet = `<type name="${escXml(name)}">\n${blocks}\n    </type>`;
-    return upsertNamedBlock(text, "spawnabletypes", "type", name, snippet);
+    return upsertSpawnableTypeBlocks(text, name, rows.map((row) => ({
+      kind: row.kind, chance: row.chance,
+      items: [{ name: row.item, chance: row.itemChance ?? 1 }],
+    })));
+  }
+
+  function updateSpawnableType(text, name, blocks, baseline) {
+    if (baseline && spawnableBlocksKey(blocks) === spawnableBlocksKey(baseline.blocks))
+      return text;
+    return upsertSpawnableTypeBlocks(text, name, blocks);
+  }
+
+  function mergeSpawnableBlockKinds(attachments, cargo, baseline) {
+    const remaining = {
+      attachments: [...attachments],
+      cargo: [...cargo],
+    };
+    const merged = [];
+    for (const oldBlock of (baseline && baseline.blocks) || []) {
+      const queue = remaining[oldBlock.kind];
+      if (queue && queue.length) merged.push(queue.shift());
+    }
+    return [...merged, ...remaining.attachments, ...remaining.cargo];
+  }
+
+  /* Fahrzeug-Editor: unveränderte Gruppen bleiben erhalten. Nur bewusst
+     geänderte Stückzahlen entfernen Vorkommen oder ergänzen neue 100%-Blöcke. */
+  function applySpawnableItemCounts(blocks, desiredRows) {
+    const desired = new Map();
+    desiredRows.forEach((row) => desired.set(row.item,
+      (desired.get(row.item) || 0) + Math.max(0, Math.round(row.num))));
+    const result = (blocks || []).map((block) => ({
+      kind: block.kind, chance: block.chance,
+      items: (block.items || []).map((item) => ({ ...item })),
+    }));
+    const occurrences = new Map();
+    result.forEach((block) => block.items.forEach((item) => {
+      if (!occurrences.has(item.name)) occurrences.set(item.name, []);
+      occurrences.get(item.name).push({ block, item });
+    }));
+    for (const [name, refs] of occurrences) {
+      const wanted = desired.has(name) ? desired.get(name) : 0;
+      for (let i = refs.length - 1; i >= wanted; i -= 1) {
+        const { block, item } = refs[i];
+        block.items.splice(block.items.indexOf(item), 1);
+      }
+      desired.delete(name);
+      for (let i = refs.length; i < wanted; i += 1)
+        result.push({ kind: "attachments", chance: 1,
+                      items: [{ name, chance: 1 }] });
+    }
+    for (const [name, count] of desired) {
+      for (let i = 0; i < count; i += 1)
+        result.push({ kind: "attachments", chance: 1,
+                      items: [{ name, chance: 1 }] });
+    }
+    return result.filter((block) => block.items.length);
   }
 
   /* ================================================== Datei-Zugriff */
@@ -371,6 +653,92 @@ ${kids}
     return wrap;
   }
 
+  /* Event-Kinder haben fünf unabhängige Werte. Eine gemeinsame "Anzahl"
+     würde min/max und die Loot-Grenzen beim Laden unbemerkt zusammenziehen. */
+  function eventChildrenList(initial) {
+    const wrap = h("div", { class: "itemlist" });
+    const rows = h("div");
+    function addRow(child) {
+      const value = child || {};
+      const input = (className, label, fallback) => h("label", { class: "hint" },
+        label, h("input", { class: "num " + className, type: "number", step: "1",
+                            min: "0", value: value[className] ?? fallback,
+                            title: label }));
+      const row = h("div", { class: "row" },
+        h("input", { class: "item-name", list: "dl-items",
+                     placeholder: "Spawn-Typ…", value: value.type || "" }),
+        input("max", "max", 1), input("min", "min", 1),
+        input("lootmax", "lootmax", 0), input("lootmin", "lootmin", 0),
+        h("button", { class: "small", onclick: () => row.remove() }, "✕"));
+      rows.append(row);
+    }
+    (initial && initial.length ? initial : [{}]).forEach(addRow);
+    wrap.append(rows,
+      h("button", { class: "small", onclick: () => addRow() }, "+ Kind"));
+    wrap.values = () => Array.from(rows.children).map((row) => ({
+      type: row.querySelector(".item-name").value.trim(),
+      max: Math.round(num(row.querySelector(".max").value, 1)),
+      min: Math.round(num(row.querySelector(".min").value, 1)),
+      lootmax: Math.round(num(row.querySelector(".lootmax").value, 0)),
+      lootmin: Math.round(num(row.querySelector(".lootmin").value, 0)),
+    })).filter((child) => child.type);
+    return wrap;
+  }
+
+  const percentValue = (chance) => Math.round(Number(chance) * 10000) / 100;
+
+  /* Ein cfgspawnabletypes-Block kann mehrere Items enthalten und besitzt eine
+     eigene Chance; jedes Item darin hat zusätzlich seine eigene Chance. */
+  function spawnableBlockList(kind, initial) {
+    const wrap = h("div", { class: "itemlist" });
+    const blocks = h("div");
+    const label = kind === "cargo" ? "cargo" : "attachments";
+    function addBlock(value) {
+      const blockValue = value || { kind, chance: 1, items: [] };
+      const itemRows = h("div");
+      function addItem(item) {
+        const itemValue = item || {};
+        const row = h("div", { class: "row" },
+          h("input", { class: "item-name", list: "dl-items",
+                       placeholder: "Item-Name…", value: itemValue.name || "" }),
+          h("input", { class: "num item-chance", type: "number", step: "0.01",
+                       min: "0", max: "100", title: "Item-Chance %",
+                       value: percentValue(itemValue.chance ?? 1) }),
+          h("span", { class: "hint" }, "Item-Chance %"),
+          h("button", { class: "small", onclick: () => row.remove() }, "✕"));
+        itemRows.append(row);
+      }
+      const box = h("div", { class: "grp" },
+        h("div", { class: "row" },
+          h("strong", {}, label + "-Block"),
+          h("input", { class: "num block-chance", type: "number", step: "0.01",
+                       min: "0", max: "100", title: "Block-Chance %",
+                       value: percentValue(blockValue.chance ?? 1) }),
+          h("span", { class: "hint" }, "Block-Chance %"),
+          h("button", { class: "small", onclick: () => box.remove() },
+            "Block entfernen")),
+        itemRows,
+        h("button", { class: "small", onclick: () => addItem() }, "+ Item im Block"));
+      ((blockValue.items && blockValue.items.length) ? blockValue.items : [{}]).forEach(addItem);
+      blocks.append(box);
+    }
+    (initial && initial.length ? initial : [{ kind, chance: 1, items: [] }]).forEach(addBlock);
+    wrap.append(blocks,
+      h("button", { class: "small", onclick: () => addBlock() }, "+ " + label + "-Block"));
+    wrap.values = () => Array.from(blocks.children).map((box) => ({
+      kind,
+      chance: Math.max(0, Math.min(1,
+        num(box.querySelector(".block-chance").value, 100) / 100)),
+      items: Array.from(box.querySelectorAll(":scope > div:nth-child(2) > .row"))
+        .map((row) => ({
+          name: row.querySelector(".item-name").value.trim(),
+          chance: Math.max(0, Math.min(1,
+            num(row.querySelector(".item-chance").value, 100) / 100)),
+        })).filter((item) => item.name),
+    })).filter((block) => block.items.length);
+    return wrap;
+  }
+
   /* Zombie-Auswahl: Kategorie- + Typ-Dropdown, ausgewählte Zombies mit Anzahl */
   function zombiePicker() {
     const wrap = h("div");
@@ -449,6 +817,13 @@ ${kids}
 
   let pickMap = null, pickGroup = null, pickTarget = null, pickMapKey = null;
 
+  function clampPickerPoint(point, size) {
+    return {
+      x: Math.max(0, Math.min(size, Math.round(Number(point.x) * 10) / 10)),
+      z: Math.max(0, Math.min(size, Math.round(Number(point.z) * 10) / 10)),
+    };
+  }
+
   function openMapPicker(target) {
     pickTarget = target;
     $("#mappick-overlay").classList.remove("hidden");
@@ -508,8 +883,11 @@ ${kids}
     marker._point = point;
     marker.on("dragend", () => {
       const pos = marker.getLatLng();
-      point.x = Math.round(pos.lng * 10) / 10;
-      point.z = Math.round(pos.lat * 10) / 10;
+      const size = window.DayZMapShared.MAPS[pickMapKey].size;
+      const clamped = clampPickerPoint({ x: pos.lng, z: pos.lat }, size);
+      point.x = clamped.x;
+      point.z = clamped.z;
+      marker.setLatLng([point.z, point.x]);
     });
     marker.on("click", () => pickGroup.removeLayer(marker));
     pickGroup.addLayer(marker);
@@ -517,10 +895,18 @@ ${kids}
 
   function bindPickerButtons() {
     $$("#map-switch-pick button").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        // Wechselt die globale Kartenwahl (eine Quelle der Wahrheit)
-        window.DayZMapShared.setMap(btn.dataset.mapkey);
-        if (pickTarget) openMapPicker(pickTarget);
+      btn.addEventListener("click", async () => {
+        const shared = window.DayZMapShared;
+        if (btn.dataset.mapkey === shared.currentKey()) return;
+        if (!confirm("Für eine andere Karte muss auch der Missionsordner " +
+                     "gewechselt werden. Das aktuelle Tool-Formular wird " +
+                     "geschlossen. Trotzdem wechseln?")) return;
+        const changed = await shared.setMap(btn.dataset.mapkey);
+        if (!changed) return;
+        pickTarget = null;
+        if (pickGroup) pickGroup.clearLayers();
+        $("#mappick-overlay").classList.add("hidden");
+        toast("Karte und Missionsordner gewechselt. Bitte das gewünschte Tool erneut öffnen.");
       });
     });
     $("#btn-mappick-ok").addEventListener("click", () => {
@@ -614,6 +1000,7 @@ ${kids}
       for (const plan of plans) {
         const current = await readOrNull(plan.path);
         const next = plan.transform(current);
+        validateGeneratedFile(plan.path, next);
         const fileBox = h("div", { class: "preview-file" },
           h("div", { class: "pf-head" },
             h("span", { class: "badge " + (current === null ? "new" : "mod") },
@@ -658,6 +1045,7 @@ ${kids}
         if (!contents.has(entry.path)) contents.set(entry.path, await readOrNull(entry.path));
         contents.set(entry.path, entry.transform(contents.get(entry.path)));
       }
+      for (const [path, content] of contents) validateGeneratedFile(path, content);
       for (const [path, content] of contents) {
         await api("/api/file", { path, content });
       }
@@ -688,52 +1076,288 @@ ${kids}
   /* ------------------------------------------------ 1. Loadout Generator */
 
   const SLOTS = [
-    ["Headgear", "Kopfbedeckung"], ["Mask", "Maske"], ["Body", "Oberteil"],
-    ["Vest", "Weste"], ["Gloves", "Handschuhe"], ["Legs", "Hose"],
-    ["Feet", "Schuhe"], ["Back", "Rucksack"],
+    ["Shoulder", "Schulterwaffe"], ["Melee", "Nahkampfwaffe"],
+    ["Hands", "In den Händen"], ["Headgear", "Kopfbedeckung"],
+    ["Mask", "Maske"], ["Eyewear", "Brille"], ["Gloves", "Handschuhe"],
+    ["Armband", "Armbinde"], ["Body", "Oberteil"], ["Vest", "Weste"],
+    ["Back", "Rucksack"], ["Hips", "Gürtel"], ["Legs", "Hose"],
+    ["Feet", "Schuhe"],
   ];
+
+  const LOADOUT_HEALTH_VALUES = ["0.7,1.0", "0.3,0.7", "0.1,1.0"];
+  const jsonClone = (value) => JSON.parse(JSON.stringify(value));
+  const asArray = (value) => Array.isArray(value) ? value : [];
+
+  function firstLoadoutSlotSet(preset, slotName) {
+    return asArray(preset && preset.attachmentSlotItemSets)
+      .find((set) => set && typeof set === "object" && set.slotName === slotName) || null;
+  }
+
+  function firstLoadoutItemSet(slotSet) {
+    const first = asArray(slotSet && slotSet.discreteItemSets)[0];
+    return first && typeof first === "object" && !Array.isArray(first) ? first : null;
+  }
+
+  function loadoutHealthValue(preset) {
+    let attributes = null;
+    for (const [slotName] of SLOTS) {
+      const itemSet = firstLoadoutItemSet(firstLoadoutSlotSet(preset, slotName));
+      if (itemSet && itemSet.attributes && typeof itemSet.attributes === "object") {
+        attributes = itemSet.attributes;
+        break;
+      }
+    }
+    if (!attributes) {
+      const unsorted = asArray(preset && preset.discreteUnsortedItemSets)
+        .find((set) => set && set.attributes && typeof set.attributes === "object");
+      attributes = unsorted && unsorted.attributes;
+    }
+    if (!attributes) return LOADOUT_HEALTH_VALUES[0];
+    const hMin = Number(attributes.healthMin);
+    const hMax = Number(attributes.healthMax);
+    return LOADOUT_HEALTH_VALUES.find((value) => {
+      const [minValue, maxValue] = value.split(",").map(Number);
+      return minValue === hMin && maxValue === hMax;
+    }) || LOADOUT_HEALTH_VALUES[0];
+  }
+
+  function loadoutCargoCounts(rows) {
+    const counts = new Map();
+    for (const row of rows || []) {
+      const item = String(row.item || "").trim();
+      if (!item) continue;
+      const amount = Math.max(1, Math.round(num(row.num, 1)));
+      counts.set(item, (counts.get(item) || 0) + amount);
+    }
+    return counts;
+  }
+
+  function loadoutCargoKey(rows) {
+    return JSON.stringify(Array.from(loadoutCargoCounts(rows)).sort(([a], [b]) =>
+      a.localeCompare(b)));
+  }
+
+  function loadoutVisibleState(preset, fallbackName) {
+    const slots = {};
+    for (const [slotName] of SLOTS) {
+      const itemSet = firstLoadoutItemSet(firstLoadoutSlotSet(preset, slotName));
+      slots[slotName] = itemSet && typeof itemSet.itemType === "string"
+        ? itemSet.itemType : "";
+    }
+    const counts = new Map();
+    for (const set of asArray(preset && preset.discreteUnsortedItemSets)) {
+      for (const item of asArray(set && set.simpleChildrenTypes)) {
+        if (typeof item === "string" && item)
+          counts.set(item, (counts.get(item) || 0) + 1);
+      }
+    }
+    return {
+      name: (preset && typeof preset.name === "string" && preset.name) || fallbackName,
+      slots,
+      cargo: Array.from(counts, ([item, amount]) => ({ item, num: amount })),
+      health: loadoutHealthValue(preset),
+    };
+  }
+
+  function loadoutHealthNumbers(value) {
+    const selected = LOADOUT_HEALTH_VALUES.includes(value)
+      ? value : LOADOUT_HEALTH_VALUES[0];
+    return selected.split(",").map(Number);
+  }
+
+  function defaultLoadoutAttributes(health) {
+    const [healthMin, healthMax] = loadoutHealthNumbers(health);
+    return { healthMin, healthMax, quantityMin: -1, quantityMax: -1 };
+  }
+
+  function defaultLoadoutItemSet(itemType, health) {
+    return {
+      itemType, spawnWeight: 1, attributes: defaultLoadoutAttributes(health),
+      quickBarSlot: -1, simpleChildrenTypes: [], complexChildrenSets: [],
+    };
+  }
+
+  function setLoadoutSlot(preset, slotName, itemType, health) {
+    if (!Array.isArray(preset.attachmentSlotItemSets))
+      preset.attachmentSlotItemSets = [];
+    const slots = preset.attachmentSlotItemSets;
+    const index = slots.findIndex((set) =>
+      set && typeof set === "object" && set.slotName === slotName);
+    if (!itemType) {
+      if (index < 0) return;
+      const slotSet = slots[index];
+      const alternatives = asArray(slotSet.discreteItemSets);
+      if (alternatives.length > 1) slotSet.discreteItemSets = alternatives.slice(1);
+      else slots.splice(index, 1);
+      return;
+    }
+    if (index < 0) {
+      slots.push({ slotName, discreteItemSets: [defaultLoadoutItemSet(itemType, health)] });
+      return;
+    }
+    const slotSet = slots[index];
+    if (!Array.isArray(slotSet.discreteItemSets)) slotSet.discreteItemSets = [];
+    const first = slotSet.discreteItemSets[0];
+    if (first && typeof first === "object" && !Array.isArray(first)) {
+      first.itemType = itemType;
+      if (!first.attributes || typeof first.attributes !== "object")
+        first.attributes = defaultLoadoutAttributes(health);
+    } else {
+      slotSet.discreteItemSets.unshift(defaultLoadoutItemSet(itemType, health));
+    }
+  }
+
+  function setLoadoutHealth(preset, health) {
+    const [healthMin, healthMax] = loadoutHealthNumbers(health);
+    for (const [slotName] of SLOTS) {
+      const itemSet = firstLoadoutItemSet(firstLoadoutSlotSet(preset, slotName));
+      if (!itemSet) continue;
+      if (!itemSet.attributes || typeof itemSet.attributes !== "object")
+        itemSet.attributes = defaultLoadoutAttributes(health);
+      else {
+        itemSet.attributes.healthMin = healthMin;
+        itemSet.attributes.healthMax = healthMax;
+      }
+    }
+  }
+
+  function applyLoadoutCargoDelta(preset, baselineRows, desiredRows, health) {
+    const before = loadoutCargoCounts(baselineRows);
+    const after = loadoutCargoCounts(desiredRows);
+    const removals = new Map();
+    for (const [item, count] of before) {
+      const remove = count - (after.get(item) || 0);
+      if (remove > 0) removals.set(item, remove);
+    }
+    if (!Array.isArray(preset.discreteUnsortedItemSets))
+      preset.discreteUnsortedItemSets = [];
+    const sets = preset.discreteUnsortedItemSets;
+    for (let setIndex = sets.length - 1; setIndex >= 0; setIndex -= 1) {
+      const simple = sets[setIndex] && sets[setIndex].simpleChildrenTypes;
+      if (!Array.isArray(simple)) continue;
+      for (let itemIndex = simple.length - 1; itemIndex >= 0; itemIndex -= 1) {
+        const item = simple[itemIndex];
+        const remaining = removals.get(item) || 0;
+        if (remaining > 0) {
+          simple.splice(itemIndex, 1);
+          removals.set(item, remaining - 1);
+        }
+      }
+    }
+    const additions = [];
+    for (const row of desiredRows || []) {
+      const item = String(row.item || "").trim();
+      if (!item) continue;
+      const wanted = after.get(item) || 0;
+      const add = wanted - (before.get(item) || 0);
+      if (add > 0 && !additions.some(([name]) => name === item))
+        additions.push([item, add]);
+    }
+    if (!additions.length) return;
+    let target = sets.find((set) => set && typeof set === "object" &&
+      Array.isArray(set.simpleChildrenTypes));
+    if (!target) target = sets.find((set) => set && typeof set === "object");
+    if (!target) {
+      target = {
+        name: "Startitems", spawnWeight: 1,
+        attributes: defaultLoadoutAttributes(health),
+        simpleChildrenTypes: [], complexChildrenSets: [],
+      };
+      sets.push(target);
+    }
+    if (!Array.isArray(target.simpleChildrenTypes)) target.simpleChildrenTypes = [];
+    for (const [item, count] of additions)
+      for (let i = 0; i < count; i += 1) target.simpleChildrenTypes.push(item);
+  }
+
+  function loadoutChanges(baseline, desired) {
+    const slots = SLOTS.map(([slotName]) => slotName)
+      .filter((slotName) => desired.slots[slotName] !== baseline.slots[slotName]);
+    return {
+      name: desired.name !== baseline.name,
+      health: desired.health !== baseline.health,
+      cargo: loadoutCargoKey(desired.cargo) !== loadoutCargoKey(baseline.cargo),
+      slots,
+    };
+  }
+
+  function updateLoadoutPreset(text, baseline, desired, fallbackPreset) {
+    const changes = loadoutChanges(baseline, desired);
+    const unchanged = !changes.name && !changes.health && !changes.cargo &&
+                      !changes.slots.length;
+    if (unchanged && text !== null) return text;
+    const preset = text !== null ? JSON.parse(text) : jsonClone(fallbackPreset);
+    if (!preset || typeof preset !== "object" || Array.isArray(preset))
+      throw new Error("Die Loadout-Datei enthält kein gültiges Preset.");
+    if (changes.name) preset.name = desired.name;
+    for (const slotName of changes.slots)
+      setLoadoutSlot(preset, slotName, desired.slots[slotName], desired.health);
+    if (changes.health) setLoadoutHealth(preset, desired.health);
+    if (changes.cargo)
+      applyLoadoutCargoDelta(preset, baseline.cargo, desired.cargo, desired.health);
+    return JSON.stringify(preset, null, 4) + "\n";
+  }
+
+  function buildNewLoadoutPreset(desired) {
+    const slotSets = [];
+    for (const [slotName] of SLOTS) {
+      const item = String(desired.slots[slotName] || "").trim();
+      if (item) slotSets.push({
+        slotName, discreteItemSets: [defaultLoadoutItemSet(item, desired.health)],
+      });
+    }
+    const loose = [];
+    for (const [item, count] of loadoutCargoCounts(desired.cargo))
+      for (let i = 0; i < count; i += 1) loose.push(item);
+    return {
+      version: 1, name: desired.name, spawnWeight: 1, characterTypes: [],
+      attachmentSlotItemSets: slotSets,
+      discreteUnsortedItemSets: loose.length ? [{
+        name: "Startitems", spawnWeight: 1,
+        attributes: defaultLoadoutAttributes(desired.health),
+        simpleChildrenTypes: loose, complexChildrenSets: [],
+      }] : [],
+    };
+  }
 
   registry.push({
     id: "loadout", icon: "🧍", title: "Loadout Generator",
     desc: "Start-Ausrüstung für frisch gespawnte Spieler festlegen – neu anlegen oder vorhandene Presets bearbeiten. (Funktioniert ab DayZ 1.20 auch auf Konsole.)",
     async render(form) {
       this._file = null;
+      this._loadedPreset = null;
+      this._loadedVisible = null;
       const gameplay = await readJsonOrNull(await missionPath("cfggameplay.json"));
       const files = (gameplay && gameplay.PlayerData &&
                      gameplay.PlayerData.spawnGearPresetFiles) || [];
       form.append(loadPicker("– Neues Preset erstellen –", files, async (file) => {
         this._file = file || null;
+        this._loadedPreset = null;
+        this._loadedVisible = null;
         if (!file) return;
         const preset = await readJsonOrNull(await missionPath(file));
-        if (!preset) return toast("Preset „" + file + "“ konnte nicht geladen werden.", "error");
-        $("#lo-name").value = preset.name || file.replace(/\.json$/i, "");
-        for (const [slot] of SLOTS) $("#lo-slot-" + slot).value = "";
-        for (const set of preset.attachmentSlotItemSets || []) {
-          const input = $("#lo-slot-" + set.slotName);
-          const first = (set.discreteItemSets || [])[0];
-          if (input && first && first.itemType) input.value = first.itemType;
+        if (!preset) {
+          this._file = null;
+          return toast("Preset „" + file + "“ konnte nicht geladen werden.", "error");
         }
-        const counts = new Map();
-        for (const set of preset.discreteUnsortedItemSets || [])
-          for (const it of set.simpleChildrenTypes || [])
-            counts.set(it, (counts.get(it) || 0) + 1);
+        const visible = loadoutVisibleState(preset, file.replace(/\.json$/i, ""));
+        this._loadedPreset = jsonClone(preset);
+        this._loadedVisible = jsonClone(visible);
+        $("#lo-name").value = visible.name;
+        for (const [slot] of SLOTS)
+          $("#lo-slot-" + slot).value = visible.slots[slot];
         const fresh = itemList({ numLabel: "Anzahl", numDefault: 1,
-          initial: counts.size ? Array.from(counts) : [["", undefined]] });
+          initial: visible.cargo.length
+            ? visible.cargo.map((row) => [row.item, row.num]) : [["", undefined]] });
         this.invList.replaceWith(fresh);
         this.invList = fresh;
-        const attrs =
-          ((preset.attachmentSlotItemSets || [])[0]?.discreteItemSets?.[0]?.attributes) ||
-          ((preset.discreteUnsortedItemSets || [])[0]?.attributes);
-        if (attrs) {
-          const v = attrs.healthMin + "," + attrs.healthMax;
-          if (Array.from($("#lo-health").options).some((o) => o.value === v))
-            $("#lo-health").value = v;
-        }
+        $("#lo-health").value = visible.health;
         toast("Preset geladen – anpassen und Vorschau öffnen.");
       }));
       form.append(field("Name des Presets",
         textInput("lo-name", "MeinLoadout")));
-      const grp = h("div", { class: "grp" }, h("h4", {}, "Kleidung (leer = Standard-Zufall)"));
+      const grp = h("div", { class: "grp" },
+        h("h4", {}, "Ausrüstungs-Slots (leer = Standard-Zufall)"));
       for (const [slot, label] of SLOTS) {
         grp.append(h("div", { class: "row" },
           h("span", { style: "width:130px" }, label),
@@ -745,7 +1369,7 @@ ${kids}
         initial: [["BandageDressing", 2], ["", undefined]] });
       inv.append(this.invList);
       form.append(inv);
-      form.append(field("Zustand der Kleidung",
+      form.append(field("Zustand der Slot-Items",
         h("select", { id: "lo-health" },
           h("option", { value: "0.7,1.0" }, "Neuwertig"),
           h("option", { value: "0.3,0.7" }, "Gebraucht"),
@@ -753,47 +1377,32 @@ ${kids}
     },
     async generate() {
       const name = $("#lo-name").value.trim() || "MeinLoadout";
+      const slots = {};
+      for (const [slotName] of SLOTS)
+        slots[slotName] = $("#lo-slot-" + slotName).value.trim();
+      const desired = {
+        name, slots, cargo: this.invList.values(), health: $("#lo-health").value,
+      };
       // Beim Bearbeiten dieselbe Datei behalten, sonst Namen aus dem Preset ableiten
       const fileName = this._file ||
         "custom_" + ((name.toLowerCase().replace(/[^a-z0-9_-]+/g, "_")
           .replace(/^_+|_+$/g, "")) || "loadout") + ".json";
-      const [hMin, hMax] = $("#lo-health").value.split(",").map(Number);
-      const slotSets = [];
-      for (const [slot] of SLOTS) {
-        const item = $("#lo-slot-" + slot).value.trim();
-        if (!item) continue;
-        slotSets.push({
-          slotName: slot,
-          discreteItemSets: [{
-            itemType: item, spawnWeight: 1,
-            attributes: { healthMin: hMin, healthMax: hMax,
-                          quantityMin: -1, quantityMax: -1 },
-            simpleChildrenTypes: [], complexChildrenTypes: [],
-          }],
-        });
-      }
-      const loose = [];
-      for (const row of this.invList.values()) {
-        for (let i = 0; i < Math.max(1, Math.round(row.num)); i++) loose.push(row.item);
-      }
-      if (!slotSets.length && !loose.length)
+      const selectedSlots = Object.values(slots).filter(Boolean).length;
+      const looseCount = Array.from(loadoutCargoCounts(desired.cargo).values())
+        .reduce((sum, count) => sum + count, 0);
+      if (!this._file && !selectedSlots && !looseCount)
         throw new Error("Bitte mindestens ein Kleidungsstück oder Item angeben.");
-      const preset = {
-        name, spawnWeight: 1, characterTypes: [],
-        attachmentSlotItemSets: slotSets,
-        discreteUnsortedItemSets: loose.length ? [{
-          name: "Startitems", spawnWeight: 1,
-          attributes: { healthMin: hMin, healthMax: hMax,
-                        quantityMin: -1, quantityMax: -1 },
-          simpleChildrenTypes: loose, complexChildrenTypes: [],
-        }] : [],
-      };
+      const baseline = this._loadedVisible && jsonClone(this._loadedVisible);
+      const fallbackPreset = this._loadedPreset && jsonClone(this._loadedPreset);
+      const newPreset = baseline ? null : buildNewLoadoutPreset(desired);
       return [
         {
           path: await missionPath(fileName),
-          summary: ["Preset „" + name + "“ mit " + slotSets.length +
-                    " Kleidungs-Slot(s) und " + loose.length + " Inventar-Item(s)."],
-          transform: () => JSON.stringify(preset, null, 4) + "\n",
+          summary: ["Preset „" + name + "“ mit " + selectedSlots +
+                    " sichtbaren Slot(s) und " + looseCount + " Inventar-Item(s)."],
+          transform: (current) => baseline
+            ? updateLoadoutPreset(current, baseline, desired, fallbackPreset)
+            : JSON.stringify(newPreset, null, 4) + "\n",
         },
         {
           path: await missionPath("cfggameplay.json"),
@@ -805,8 +1414,8 @@ ${kids}
             if (!data.PlayerData) data.PlayerData = {};
             if (!Array.isArray(data.PlayerData.spawnGearPresetFiles))
               data.PlayerData.spawnGearPresetFiles = [];
-            if (!data.PlayerData.spawnGearPresetFiles.includes(fileName))
-              data.PlayerData.spawnGearPresetFiles.push(fileName);
+            if (data.PlayerData.spawnGearPresetFiles.includes(fileName)) return current;
+            data.PlayerData.spawnGearPresetFiles.push(fileName);
             return JSON.stringify(data, null, 4) + "\n";
           },
         },
@@ -860,11 +1469,13 @@ ${kids}
         h("p", { class: "hint" }, "Jede Position wird eine eigene Zone."),
         this.pos));
       this.safe = posList({ startEmpty: true });
+      this.safe.setValues((Array.isArray(eff && eff.SafePositions) ? eff.SafePositions : [])
+        .map(([x, z]) => ({ x, z })));
       form.append(h("div", { class: "grp" },
         h("h4", {}, "Sichere Teleport-Punkte (SafePositions)"),
-        h("p", { class: "hint" }, "Wohin Spieler versetzt werden, die mitten " +
-          "in einer Gaszone einloggen. Optional, aber empfohlen – sonst " +
-          "sterben sie beim Beitreten."),
+        h("p", { class: "hint" }, "Globale Liste für alle Gaszonen. Vorhandene " +
+          "Punkte sind bereits eingetragen. Dorthin werden Spieler versetzt, " +
+          "die mitten in einer Gaszone einloggen."),
         this.safe));
     },
     async generate() {
@@ -908,8 +1519,7 @@ ${kids}
           const newNames = new Set(areas.map((a) => a.AreaName));
           data.Areas = data.Areas.filter((a) => !newNames.has(a.AreaName));
           data.Areas.push(...areas);
-          if (!Array.isArray(data.SafePositions)) data.SafePositions = [];
-          if (safe.length) data.SafePositions = safe.map((s) => [s.x, s.z]);
+          data.SafePositions = safe.map((s) => [s.x, s.z]);
           return JSON.stringify(data, null, 4) + "\n";
         },
       }];
@@ -1047,12 +1657,17 @@ ${kids}
     async render(form) {
       const grp = h("div", { class: "grp" },
         h("h4", {}, "Loot an der Absturzstelle (Wreck_UH1Y)"));
-      this.loot = itemList({ numLabel: "Chance %", numDefault: 30, step: "1",
-        initial: [["M4A1", 25], ["Mag_STANAG_30Rnd", 60], ["", undefined]] });
-      grp.append(this.loot,
-        h("p", { class: "hint" }, "Jedes Item erscheint mit seiner eigenen " +
-          "Chance unabhängig von den anderen. Ersetzt den bisherigen " +
-          "Wreck_UH1Y-Eintrag in cfgspawnabletypes.xml."));
+      this._loadedSpawnable = null;
+      this.lootAtt = spawnableBlockList("attachments", []);
+      this.lootCargo = spawnableBlockList("cargo", [
+        { kind: "cargo", chance: 0.25, items: [{ name: "M4A1", chance: 1 }] },
+        { kind: "cargo", chance: 0.60,
+          items: [{ name: "Mag_STANAG_30Rnd", chance: 1 }] },
+      ]);
+      grp.append(h("h4", {}, "Aufsatz-Blöcke"), this.lootAtt,
+        h("h4", {}, "Cargo-Blöcke"), this.lootCargo,
+        h("p", { class: "hint" }, "Block-Chance und Item-Chance werden getrennt " +
+          "bearbeitet. Alle vorhandenen Blöcke und alle Items darin werden geladen."));
       form.append(grp);
       const counts = h("div", { class: "grp" }, h("h4", {}, "Anzahl gleichzeitiger Heli-Crashes"));
       counts.append(h("div", { class: "row" },
@@ -1075,27 +1690,25 @@ ${kids}
       }
       // Aktuellen Wreck-Loot aus cfgspawnabletypes.xml zum Bearbeiten laden
       const stDoc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
-      const node = stDoc && stDoc.querySelector('type[name="Wreck_UH1Y"]');
+      const node = stDoc && findElementByName(stDoc, "spawnabletypes > type", "Wreck_UH1Y");
       if (node) {
-        const rows = Array.from(node.querySelectorAll(":scope > attachments, :scope > cargo"))
-          .map((b) => {
-            const item = b.querySelector("item");
-            return [item ? item.getAttribute("name") : "",
-                    Math.round((Number(b.getAttribute("chance")) || 0) * 100)];
-          }).filter(([i]) => i);
-        if (rows.length) {
-          const fresh = itemList({ numLabel: "Chance %", numDefault: 30, step: "1",
-                                   initial: rows });
-          this.loot.replaceWith(fresh);
-          this.loot = fresh;
-        }
+        this._loadedSpawnable = spawnableDefinitionFromElement(node);
+        const att = spawnableBlockList("attachments",
+          this._loadedSpawnable.blocks.filter((block) => block.kind === "attachments"));
+        const cargo = spawnableBlockList("cargo",
+          this._loadedSpawnable.blocks.filter((block) => block.kind === "cargo"));
+        this.lootAtt.replaceWith(att);
+        this.lootCargo.replaceWith(cargo);
+        this.lootAtt = att;
+        this.lootCargo = cargo;
       }
     },
     async generate() {
-      const loot = this.loot.values();
+      const baseline = this._loadedSpawnable;
+      const blocks = mergeSpawnableBlockKinds(
+        this.lootAtt.values(), this.lootCargo.values(), baseline);
+      const loot = blocks.flatMap((block) => block.items);
       if (!loot.length) throw new Error("Bitte mindestens ein Loot-Item angeben.");
-      const rows = loot.map((l) => ({ kind: "cargo", item: l.item,
-                                      chance: Math.min(1, l.num / 100) }));
       const nominal = num($("#hl-nominal").value, 5);
       const minV = num($("#hl-min").value, 3);
       const maxV = num($("#hl-max").value, 7);
@@ -1103,10 +1716,11 @@ ${kids}
       const plans = [
         {
           path: await missionPath("cfgspawnabletypes.xml"),
-          summary: ["Heli-Crash-Loot: " + loot.map((l) => l.item + " (" + l.num + " %)").join(", ")],
+          summary: ["Heli-Crash-Loot: " + blocks.length + " Block/Blöcke, " +
+                    loot.length + " Item(s): " + loot.map((item) => item.name).join(", ")],
           transform: (current) => {
             const base = current ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<spawnabletypes>\n</spawnabletypes>\n';
-            return upsertSpawnableType(base, "Wreck_UH1Y", rows);
+            return updateSpawnableType(base, "Wreck_UH1Y", blocks, baseline);
           },
         },
         {
@@ -1174,6 +1788,8 @@ ${kids}
       this._spDoc = await readXmlOrNull(await missionPath("cfgeventspawns.xml"));
       this._stDoc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
       this._nameTouched = false;
+      this._loadedVehicleSpawnable = null;
+      this._loadedVehicleType = null;
       const vehEvents = [];
       if (this._evDoc) this._evDoc.querySelectorAll("events > event").forEach((ev) => {
         const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
@@ -1218,13 +1834,15 @@ ${kids}
       };
       sel.addEventListener("change", () => {
         if (!this._nameTouched) nameInput.value = autoName();
+        this._loadedVehicleSpawnable = null;
+        this._loadedVehicleType = null;
         fillParts();
       });
       fillParts();
     },
     fillFrom(name) {
       if (!name || !this._evDoc) return;
-      const ev = this._evDoc.querySelector(`event[name="${name}"]`);
+      const ev = findElementByName(this._evDoc, "events > event", name);
       if (!ev) return;
       const get = (f, dflt) => {
         const el = ev.querySelector(":scope > " + f);
@@ -1241,15 +1859,17 @@ ${kids}
       $("#vh-max").value = get("max", 4);
       // Verbaute Teile aus cfgspawnabletypes.xml übernehmen
       const typeNode = type && this._stDoc &&
-        this._stDoc.querySelector(`type[name="${type}"]`);
+        findElementByName(this._stDoc, "spawnabletypes > type", type);
+      this._loadedVehicleSpawnable = null;
+      this._loadedVehicleType = null;
       $("#vh-fit").checked = !!typeNode;
       if (typeNode) {
+        this._loadedVehicleSpawnable = spawnableDefinitionFromElement(typeNode);
+        this._loadedVehicleType = type;
         const counts = new Map();
-        typeNode.querySelectorAll(":scope > attachments > item, :scope > cargo > item")
-          .forEach((it) => {
-            const n = it.getAttribute("name");
-            if (n) counts.set(n, (counts.get(n) || 0) + 1);
-          });
+        this._loadedVehicleSpawnable.blocks.forEach((block) => block.items.forEach((item) => {
+          if (item.name) counts.set(item.name, (counts.get(item.name) || 0) + 1);
+        }));
         const fresh = itemList({ numLabel: "Anzahl", numDefault: 1,
                                  initial: Array.from(counts) });
         this.parts.replaceWith(fresh);
@@ -1306,19 +1926,23 @@ ${kids}
         },
       ];
       if ($("#vh-fit").checked) {
-        const rows = [];
-        for (const part of this.parts.values()) {
-          for (let i = 0; i < Math.max(1, Math.round(part.num)); i++)
-            rows.push({ kind: "attachments", item: part.item, chance: 1 });
-        }
-        if (rows.length) {
+        const parts = this.parts.values();
+        const baseline = type === this._loadedVehicleType
+          ? this._loadedVehicleSpawnable : null;
+        const blocks = baseline
+          ? applySpawnableItemCounts(baseline.blocks, parts)
+          : parts.flatMap((part) => Array.from(
+              { length: Math.max(1, Math.round(part.num)) },
+              () => ({ kind: "attachments", chance: 1,
+                       items: [{ name: part.item, chance: 1 }] })));
+        if (blocks.length) {
           plans.push({
             path: await missionPath("cfgspawnabletypes.xml"),
             summary: [type + " spawnt fahrbereit mit: " +
-                      this.parts.values().map((p) => p.num + "× " + p.item).join(", ")],
+                      parts.map((p) => p.num + "× " + p.item).join(", ")],
             transform: (current) => {
               const base = current ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<spawnabletypes>\n</spawnabletypes>\n';
-              return upsertSpawnableType(base, type, rows);
+              return updateSpawnableType(base, type, blocks, baseline);
             },
           });
         }
@@ -1334,28 +1958,24 @@ ${kids}
     desc: "Bestimmen, womit ein Item spawnt: Waffen mit Aufsätzen, Rucksäcke mit Inhalt, Zombies mit Loot in den Taschen – neu anlegen oder vorhandene Einträge bearbeiten. (cfgspawnabletypes.xml)",
     async render(form) {
       this._doc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
+      this._loadedSpawnable = null;
+      this._loadedSpawnableName = null;
       const names = this._doc
         ? Array.from(this._doc.querySelectorAll("spawnabletypes > type"))
             .map((t) => t.getAttribute("name")).filter(Boolean)
         : [];
       form.append(loadPicker("– Neuen Eintrag erstellen –", names, (name) => {
-        const node = this._doc && this._doc.querySelector(`type[name="${name}"]`);
+        const node = this._doc && findElementByName(this._doc, "spawnabletypes > type", name);
         if (!node) return;
         $("#sp-target").value = name;
-        const collect = (kind) =>
-          Array.from(node.querySelectorAll(":scope > " + kind)).map((b) => {
-            const item = b.querySelector("item");
-            return [item ? item.getAttribute("name") : "",
-                    Math.round((Number(b.getAttribute("chance")) || 0) * 100)];
-          }).filter(([i]) => i);
-        const attRows = collect("attachments");
-        const cargoRows = collect("cargo");
-        const freshAtt = itemList({ numLabel: "Chance %", numDefault: 100,
-          initial: attRows.length ? attRows : [["", undefined]] });
+        this._loadedSpawnable = spawnableDefinitionFromElement(node);
+        this._loadedSpawnableName = name;
+        const freshAtt = spawnableBlockList("attachments",
+          this._loadedSpawnable.blocks.filter((block) => block.kind === "attachments"));
         this.att.replaceWith(freshAtt);
         this.att = freshAtt;
-        const freshCargo = itemList({ numLabel: "Chance %", numDefault: 100,
-          initial: cargoRows.length ? cargoRows : [["", undefined]] });
+        const freshCargo = spawnableBlockList("cargo",
+          this._loadedSpawnable.blocks.filter((block) => block.kind === "cargo"));
         this.cargo.replaceWith(freshCargo);
         this.cargo = freshCargo;
         toast("Eintrag „" + name + "“ geladen – anpassen und Vorschau öffnen.");
@@ -1363,37 +1983,32 @@ ${kids}
       form.append(field("Ziel (Waffe / Tasche / Zombie / Container)",
         textInput("sp-target", "", "z.B. AKM, ZmbM_SoldierNormal…", "dl-items")));
       const att = h("div", { class: "grp" }, h("h4", {}, "Aufsätze / Anbauteile (attachments)"));
-      this.att = itemList({ numLabel: "Chance %", numDefault: 100,
-                            initial: [["", undefined]] });
+      this.att = spawnableBlockList("attachments", []);
       att.append(this.att);
       form.append(att);
       const cargo = h("div", { class: "grp" }, h("h4", {}, "Inhalt (cargo)"));
-      this.cargo = itemList({ numLabel: "Chance %", numDefault: 100,
-                              initial: [["", undefined]] });
+      this.cargo = spawnableBlockList("cargo", []);
       cargo.append(this.cargo);
       form.append(cargo);
       form.append(h("p", { class: "hint" },
-        "Beispiel Waffe: Ziel AKM, Aufsätze Mag_AKM_30Rnd (100 %), " +
-        "PSO1Optic (50 %). Ersetzt den bisherigen Eintrag dieses Typs."));
+        "Jeder Block hat eine eigene Spawn-Chance; die Items darin haben " +
+        "zusätzliche Einzelchancen. Beim Laden bleiben alle Blöcke und Items erhalten."));
     },
     async generate() {
       const target = $("#sp-target").value.trim();
       if (!target) throw new Error("Bitte einen Ziel-Typ angeben.");
-      const rows = [
-        ...this.att.values().map((r) => ({ kind: "attachments", item: r.item,
-                                           chance: Math.min(1, r.num / 100) })),
-        ...this.cargo.values().map((r) => ({ kind: "cargo", item: r.item,
-                                             chance: Math.min(1, r.num / 100) })),
-      ];
-      if (!rows.length) throw new Error("Bitte mindestens einen Aufsatz oder Inhalt angeben.");
+      const baseline = target === this._loadedSpawnableName ? this._loadedSpawnable : null;
+      const blocks = mergeSpawnableBlockKinds(
+        this.att.values(), this.cargo.values(), baseline);
+      const items = blocks.flatMap((block) => block.items);
+      if (!items.length) throw new Error("Bitte mindestens einen Aufsatz oder Inhalt angeben.");
       return [{
         path: await missionPath("cfgspawnabletypes.xml"),
-        summary: ["„" + target + "“ spawnt mit: " + rows.map((r) =>
-          r.item + " (" + Math.round(r.chance * 100) + " %, " +
-          (r.kind === "cargo" ? "Inhalt" : "Aufsatz") + ")").join(", ")],
+        summary: ["„" + target + "“: " + blocks.length + " Block/Blöcke mit " +
+                  items.length + " Item(s): " + items.map((item) => item.name).join(", ")],
         transform: (current) => {
           const base = current ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<spawnabletypes>\n</spawnabletypes>\n';
-          return upsertSpawnableType(base, target, rows);
+          return updateSpawnableType(base, target, blocks, baseline);
         },
       }];
     },
@@ -1405,6 +2020,8 @@ ${kids}
     id: "event", icon: "📅", title: "Event-Vorlagen",
     desc: "Eigene Events komplett konfigurieren oder vorhandene Events anpassen (db/events.xml).",
     async render(form) {
+      this._loadedEvent = null;
+      this._loadedEventName = null;
       const loadSel = h("select", { id: "ev-load" },
         h("option", { value: "" }, "– Neues Event –"));
       form.append(field("Vorhandenes Event laden", loadSel));
@@ -1434,9 +2051,7 @@ ${kids}
           h("option", { value: "child" }, "child"),
           h("option", { value: "parent" }, "parent"))));
       const kids = h("div", { class: "grp" }, h("h4", {}, "Kinder (was spawnt)"));
-      this.children = itemList({ numLabel: "max", numDefault: 1,
-        placeholder: "Typ, z.B. Wreck_UH1Y oder OffroadHatchback",
-        initial: [["", undefined]] });
+      this.children = eventChildrenList([]);
       kids.append(this.children);
       form.append(kids);
       this.pos = posList({ angle: true, startEmpty: true });
@@ -1456,40 +2071,34 @@ ${kids}
     },
     fillFrom(name) {
       if (!name || !this._eventsDoc) return;
-      const ev = this._eventsDoc.querySelector(`event[name="${name}"]`);
+      const ev = findElementByName(this._eventsDoc, "events > event", name);
       if (!ev) return;
-      const get = (f, dflt) => {
-        const el = ev.querySelector(":scope > " + f);
-        return el ? el.textContent.trim() : dflt;
-      };
+      const loaded = eventDefinitionFromElement(ev);
+      this._loadedEvent = loaded;
+      this._loadedEventName = name;
       $("#ev-name").value = name;
-      $("#ev-nominal").value = get("nominal", 1);
-      $("#ev-min").value = get("min", 1);
-      $("#ev-max").value = get("max", 1);
-      $("#ev-lifetime").value = get("lifetime", 1800);
-      $("#ev-restock").value = get("restock", 0);
-      $("#ev-safe").value = get("saferadius", 500);
-      $("#ev-dist").value = get("distanceradius", 500);
-      $("#ev-cleanup").value = get("cleanupradius", 1000);
-      $("#ev-position").value = get("position", "fixed");
-      $("#ev-limit").value = get("limit", "custom");
-      $("#ev-active").checked = get("active", "1") === "1";
-      const flags = ev.querySelector(":scope > flags");
-      if (flags) {
-        $("#ev-deletable").checked = flags.getAttribute("deletable") === "1";
-        $("#ev-initrandom").checked = flags.getAttribute("init_random") === "1";
-        $("#ev-removedmg").checked = flags.getAttribute("remove_damaged") === "1";
-      }
-      const fresh = itemList({ numLabel: "max", numDefault: 1,
-        placeholder: "Typ…",
-        initial: Array.from(ev.querySelectorAll(":scope > children > child")).map(
-          (c) => [c.getAttribute("type"), Number(c.getAttribute("max")) || 1]) });
+      $("#ev-nominal").value = loaded.nominal;
+      $("#ev-min").value = loaded.min;
+      $("#ev-max").value = loaded.max;
+      $("#ev-lifetime").value = loaded.lifetime;
+      $("#ev-restock").value = loaded.restock;
+      $("#ev-safe").value = loaded.saferadius;
+      $("#ev-dist").value = loaded.distanceradius;
+      $("#ev-cleanup").value = loaded.cleanupradius;
+      $("#ev-position").value = loaded.position;
+      $("#ev-limit").value = loaded.limit;
+      $("#ev-active").checked = Number(loaded.active) === 1;
+      $("#ev-deletable").checked = Number(loaded.flags.deletable) === 1;
+      $("#ev-initrandom").checked = Number(loaded.flags.init_random) === 1;
+      $("#ev-removedmg").checked = Number(loaded.flags.remove_damaged) === 1;
+      const fresh = eventChildrenList(loaded.children);
       this.children.replaceWith(fresh);
       this.children = fresh;
       // Vorhandene Positionen aus cfgeventspawns.xml übernehmen
       if (this._spawnsDoc) {
-        this.pos.setValues(Array.from(
-          this._spawnsDoc.querySelectorAll(`event[name="${name}"] > pos`)).map((p) => ({
+        const spawnEvent = findElementByName(this._spawnsDoc, "eventposdef > event", name);
+        this.pos.setValues(Array.from(spawnEvent ? spawnEvent.children : [])
+          .filter((node) => node.localName === "pos").map((p) => ({
             x: Number(p.getAttribute("x")) || 0,
             z: Number(p.getAttribute("z")) || 0,
             a: Number(p.getAttribute("a")) || 0,
@@ -1520,17 +2129,19 @@ ${kids}
         position: $("#ev-position").value,
         limit: $("#ev-limit").value,
         active: $("#ev-active").checked ? 1 : 0,
-        children: children.map((c) => ({ type: c.item, min: Math.round(c.num),
-                                         max: Math.round(c.num) })),
+        children,
       };
+      const loadedName = this._loadedEventName;
+      const baseline = this._loadedEvent;
       const positions = this.pos.values();
       const plans = [{
         path: mission("db/events.xml"),
         summary: ["Event „" + name + "“ (nominal " + def.nominal + ", " +
-                  children.map((c) => c.num + "× " + c.item).join(", ") + ")."],
+                  children.map((c) => c.min + "–" + c.max + "× " + c.type)
+                    .join(", ") + ")."],
         transform: (current) => {
           if (current === null) throw new Error("db/events.xml wurde auf dem Server nicht gefunden.");
-          return upsertEvent(current, def);
+          return updateEventTemplate(current, loadedName, def, baseline);
         },
       }];
       if (positions.length) {
@@ -1553,7 +2164,7 @@ ${kids}
 
   /* Nach einem Kartenwechsel hängen alle Daten am neuen Missionsordner:
      Caches leeren, Vormerkungen verwerfen, offenes Formular schließen. */
-  function onMissionChanged() {
+  function resetScopedState(previousLabel) {
     itemCache = null;
     missionFiles = null;
     ["dl-items", "dl-zmb"].forEach((id) => {
@@ -1563,7 +2174,8 @@ ${kids}
     if (staged.length) {
       staged.length = 0;
       updateStagingBar();
-      toast("Vorgemerkte Änderungen verworfen – sie gehörten zur vorherigen Karte.", "warn");
+      toast("Vorgemerkte Änderungen verworfen – sie gehörten zum vorherigen " +
+            previousLabel + ".", "warn");
     }
     if (initialized && currentTool) {
       $("#tool-panel").classList.add("hidden");
@@ -1572,6 +2184,9 @@ ${kids}
     }
     if (initialized) ensureDatalists();
   }
+
+  function onMissionChanged() { resetScopedState("Missionsordner"); }
+  function onServerChanged() { resetScopedState("Server"); }
 
   function init() {
     if (initialized) return;
@@ -1626,9 +2241,16 @@ ${kids}
     }
   }
 
-  return { init, registry, onMissionChanged,
+  return { init, registry, onMissionChanged, onServerChanged,
+           hasStaged: () => staged.length > 0,
            _test: { upsertEvent, upsertEventspawns,
-                    upsertSpawnableType, updateEventCounts,
+                    upsertSpawnableType, upsertSpawnableTypeBlocks,
+                    updateSpawnableType, parseSpawnableType,
+                    parseEventDefinition, updateEventTemplate,
+                    applySpawnableItemCounts, mergeSpawnableBlockKinds,
+                    loadoutVisibleState, updateLoadoutPreset,
+                    buildNewLoadoutPreset, clampPickerPoint,
+                    updateEventCounts,
                     lineDiff } };
 })();
 

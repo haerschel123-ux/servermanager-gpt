@@ -105,6 +105,7 @@ const DayZMap = {
   data: null,
   loadedOk: { playerspawns: false, events: false, objects: false },
   dirty: false,
+  dirtyParts: { playerspawns: false, events: false, objects: false },
 
   world() { return MAPS[this.mapKey].size; },
 
@@ -147,15 +148,19 @@ const DayZMap = {
     };
     const topo = this.baseLayers["🗺️ Karte"];
     const grid = this.baseLayers["▦ Gitter (offline)"];
-    let failedTiles = 0;
-    topo.on("tileerror", () => {
-      failedTiles += 1;
-      if (failedTiles === 3 && this.map && this.map.hasLayer(topo)) {
-        this.map.removeLayer(topo);
-        grid.addTo(this.map);
-        toast("Kartenbilder sind gerade nicht erreichbar – das Koordinatengitter wurde eingeschaltet.", "warn");
-      }
-    });
+    const addTileFallback = (layer) => {
+      let failedTiles = 0;
+      layer.on("tileerror", () => {
+        failedTiles += 1;
+        if (failedTiles === 3 && this.map && this.map.hasLayer(layer)) {
+          this.map.removeLayer(layer);
+          grid.addTo(this.map);
+          toast("Kartenbilder sind gerade nicht erreichbar – das Koordinatengitter wurde eingeschaltet.", "warn");
+        }
+      });
+    };
+    addTileFallback(topo);
+    addTileFallback(this.baseLayers["🛰️ Satellit"]);
     topo.addTo(this.map);
 
     this.cityLabels = L.layerGroup();
@@ -190,34 +195,46 @@ const DayZMap = {
      Missionsordner auf dem Server mit – existiert der Ordner der Karte
      dort nicht, wird die Auswahl zurückgedreht (Pfad-Sicherheit). */
   async setMap(key, persist) {
-    if (!MAPS[key] || key === this.mapKey) { this.updateSwitchButtons(); return; }
+    if (!MAPS[key]) return false;
+    if (key === this.mapKey) { this.updateSwitchButtons(); return true; }
+    const hasUnsaved = window.hasUnsavedServerState
+      ? window.hasUnsavedServerState()
+      : this.dirty;
+    if (persist !== false && hasUnsaved &&
+        !confirm("Es gibt ungespeicherte Änderungen. Beim Kartenwechsel werden " +
+                 "sie verworfen. Trotzdem wechseln?")) {
+      this.updateSwitchButtons();
+      return false;
+    }
     const before = this.mapKey;
     this.mapKey = key;
     this.buildMap();
     this.redraw();
     this.updateSwitchButtons();
-    if (persist === false) return;
-    if (!window.App || !App.state.configured) return;
+    if (persist === false) return true;
+    if (!window.App || !App.state.configured) return true;
     try {
       App.state = await api("/api/settings", { map: key });
       if (App.state.mission_dir)
         toast("Karte gewechselt – benutze jetzt: " + App.state.mission_dir);
       // Alles neu laden, was am Missionsordner hängt
-      this.loadData();
+      this.setDirty(false);
+      await this.loadData();
       if (window.Loot) {
-        Loot.changes = {};
-        Loot.loaded = false;
-        Loot.updateBar();
+        Loot.reset();
         if ($("#tab-loot").classList.contains("active")) Loot.load();
       }
       if (window.Tools && Tools.onMissionChanged) Tools.onMissionChanged();
+      if (window.Files) Files.reset();
       if (window.Files && App.state.mission_dir) Files.openDir(App.state.mission_dir);
+      return true;
     } catch (err) {
       toast(err.message, "error");
       this.mapKey = before;
       this.buildMap();
       this.redraw();
       this.updateSwitchButtons();
+      return false;
     }
   },
 
@@ -253,6 +270,9 @@ const DayZMap = {
   /* -------------------------------------------------------------- Daten */
 
   async loadData() {
+    this.data = null;
+    this.loadedOk = { playerspawns: false, events: false, objects: false };
+    Object.values(this.groups).forEach((group) => group.clearLayers());
     try {
       this.data = await api("/api/map/data");
       this.loadedOk.playerspawns = !this.data.warnings.some((w) => w.includes("cfgplayerspawnpoints"));
@@ -262,8 +282,10 @@ const DayZMap = {
       this.fillEventSelect();
       this.redraw();
       this.setDirty(false);
+      return true;
     } catch (err) {
       toast("Kartendaten konnten nicht geladen werden: " + err.message, "error");
+      return false;
     }
   },
 
@@ -280,9 +302,14 @@ const DayZMap = {
     if (current) sel.value = current;
   },
 
-  setDirty(dirty) {
-    this.dirty = dirty;
-    $("#map-dirty").classList.toggle("hidden", !dirty);
+  setDirty(dirty, part) {
+    if (!dirty) {
+      for (const key of Object.keys(this.dirtyParts)) this.dirtyParts[key] = false;
+    } else if (part && part in this.dirtyParts) {
+      this.dirtyParts[part] = true;
+    }
+    this.dirty = Object.values(this.dirtyParts).some(Boolean);
+    $("#map-dirty").classList.toggle("hidden", !this.dirty);
   },
 
   /* ------------------------------------------------------------ Zeichnen */
@@ -294,6 +321,7 @@ const DayZMap = {
     for (const section of ["fresh", "hop", "travel"]) {
       (this.data.playerspawns[section] || []).forEach((point) => {
         this.addDot(this.groups[section], LAYER_STYLE[section], point, {
+          part: "playerspawns",
           title: LAYER_STYLE[section].label,
           onDelete: () => {
             const arr = this.data.playerspawns[section];
@@ -305,6 +333,7 @@ const DayZMap = {
     this.data.events.forEach((ev) => {
       ev.positions.forEach((point) => {
         this.addDot(this.groups.events, LAYER_STYLE.events, point, {
+          part: "events",
           title: "Event: " + ev.name,
           onDelete: () => {
             ev.positions.splice(ev.positions.indexOf(point), 1);
@@ -315,6 +344,7 @@ const DayZMap = {
     });
     this.data.objects.forEach((obj) => {
       this.addDot(this.groups.objects, LAYER_STYLE.objects, obj, {
+        part: "objects",
         title: "Objekt: " + obj.name,
         extra: "Höhe Y: " + obj.y + " m · Drehung: " + obj.yaw + "°",
         onDelete: () => {
@@ -336,9 +366,11 @@ const DayZMap = {
     });
     marker.on("dragend", () => {
       const pos = marker.getLatLng();
-      point.x = Math.round(pos.lng * 10) / 10;
-      point.z = Math.round(pos.lat * 10) / 10;
-      this.setDirty(true);
+      const world = this.world();
+      point.x = Math.max(0, Math.min(world, Math.round(pos.lng * 10) / 10));
+      point.z = Math.max(0, Math.min(world, Math.round(pos.lat * 10) / 10));
+      marker.setLatLng([point.z, point.x]);
+      this.setDirty(true, opts.part);
       marker.setPopupContent(this.popupHtml(point, opts));
     });
     marker.bindPopup(this.popupHtml(point, opts));
@@ -346,7 +378,7 @@ const DayZMap = {
       const btn = ev.popup.getElement().querySelector(".btn-del");
       if (btn) btn.addEventListener("click", () => {
         opts.onDelete();
-        this.setDirty(true);
+        this.setDirty(true, opts.part);
         this.redraw();
       });
     });
@@ -374,7 +406,7 @@ const DayZMap = {
       if (!this.loadedOk.playerspawns)
         return toast("cfgplayerspawnpoints.xml wurde nicht geladen – Bearbeiten deaktiviert.", "warn");
       this.data.playerspawns[section].push({ x, z });
-      this.setDirty(true);
+      this.setDirty(true, "playerspawns");
       this.redraw();
     } else if (mode === "events") {
       if (!this.loadedOk.events)
@@ -384,7 +416,7 @@ const DayZMap = {
       const ev2 = this.data.events.find((e) => e.name === name);
       ev2.positions.push({ x, z, a: 0 });
       this.fillEventSelect();
-      this.setDirty(true);
+      this.setDirty(true, "events");
       this.redraw();
     } else if (mode === "objects") {
       this.askNewObject(x, z);
@@ -409,7 +441,7 @@ const DayZMap = {
         yaw: Number(popup.getElement().querySelector("#obj-yaw").value) || 0,
       });
       this.map.closePopup();
-      this.setDirty(true);
+      this.setDirty(true, "objects");
       this.redraw();
     });
   },
@@ -419,9 +451,16 @@ const DayZMap = {
   async save() {
     if (!this.data) return false;
     const payload = {};
-    if (this.loadedOk.playerspawns) payload.playerspawns = this.data.playerspawns;
-    if (this.loadedOk.events) payload.events = this.data.events;
-    if (this.loadedOk.objects || this.data.objects.length) payload.objects = this.data.objects;
+    if (this.dirtyParts.playerspawns && this.loadedOk.playerspawns)
+      payload.playerspawns = this.data.playerspawns;
+    if (this.dirtyParts.events && this.loadedOk.events)
+      payload.events = this.data.events;
+    if (this.dirtyParts.objects && (this.loadedOk.objects || this.data.objects.length))
+      payload.objects = this.data.objects;
+    if (!Object.keys(payload).length) {
+      toast("Es gibt keine Kartenänderungen zum Speichern.", "warn");
+      return false;
+    }
     try {
       const result = await api("/api/map/save", payload);
       toast("Gespeichert: " + result.saved.join(", ") + " (Backups angelegt)");
@@ -462,8 +501,10 @@ const DayZMap = {
     $("#btn-new-event").addEventListener("click", () => {
       const name = prompt("Name des Events (wie in db/events.xml, z.B. StaticHeliCrash):");
       if (!name || !name.trim()) return;
-      if (!this.data.events.some((e) => e.name === name.trim()))
+      if (!this.data.events.some((e) => e.name === name.trim())) {
         this.data.events.push({ name: name.trim(), positions: [] });
+        this.setDirty(true, "events");
+      }
       this.fillEventSelect();
       $("#event-select").value = name.trim();
     });

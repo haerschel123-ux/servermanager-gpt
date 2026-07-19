@@ -6,6 +6,20 @@ const Files = {
   openPath: "",
   original: "",
 
+  reset() {
+    this.currentDir = "";
+    this.openPath = "";
+    this.original = "";
+    $("#breadcrumb").innerHTML = "";
+    $("#file-list").innerHTML = "";
+    $("#file-search").value = "";
+    $("#search-results").innerHTML = "";
+    $("#search-results").classList.add("hidden");
+    $("#editor").value = "";
+    $("#editor-path").textContent = "Keine Datei geöffnet";
+    this.updateDirty();
+  },
+
   /* --------------------------------------------------------- Verzeichnis */
 
   async openDir(dir) {
@@ -81,9 +95,27 @@ const Files = {
     $("#btn-file-save").disabled = !dirty;
   },
 
+  validateContent(path, content) {
+    if (/\.xml$/i.test(path)) {
+      const doc = new DOMParser().parseFromString(content, "text/xml");
+      if (doc.querySelector("parsererror")) {
+        throw new Error("Die XML-Datei enthält einen Fehler. Bitte die letzte " +
+                        "Änderung prüfen; es wurde nichts hochgeladen.");
+      }
+    } else if (/\.json$/i.test(path)) {
+      try {
+        JSON.parse(content.replace(/^\uFEFF/, ""));
+      } catch (err) {
+        throw new Error("Die JSON-Datei enthält einen Fehler. Bitte Kommas, " +
+                        "Klammern und Anführungszeichen prüfen; es wurde nichts hochgeladen.");
+      }
+    }
+  },
+
   async save() {
     if (!this.openPath) return;
     try {
+      this.validateContent(this.openPath, $("#editor").value);
       await api("/api/file", { path: this.openPath, content: $("#editor").value });
       this.original = $("#editor").value;
       this.updateDirty();
@@ -130,6 +162,13 @@ const Files = {
         });
         box.appendChild(div);
       });
+      if (data.truncated) {
+        const note = document.createElement("div");
+        note.className = "result hint";
+        note.textContent = "Die Suche wurde beim Sicherheitslimit beendet. " +
+          "Bitte den Suchbegriff genauer eingrenzen.";
+        box.appendChild(note);
+      }
     } catch (err) {
       box.classList.add("hidden");
       toast("Suche fehlgeschlagen: " + err.message, "error");

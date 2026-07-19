@@ -424,6 +424,7 @@ input, select {
 
   /* Touch-Ziele etwas größer */
   button { padding: 10px 14px; }
+  button.small { min-height: 42px; padding: 9px 12px; }
   .leaflet-popup-content { font-size: 14px; }
 }
 
