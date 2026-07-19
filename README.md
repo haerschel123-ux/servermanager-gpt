@@ -7,15 +7,16 @@ Browser – auch komplett vom Handy aus:
 
 - 📁 Alle Server-Dateien finden & bearbeiten (auch die, die das
   Nitrado-Panel nicht anzeigt), mit Suche über den ganzen Server
-- 🗺️ Interaktive Chernarus-Karte: Spawnpunkte, Events (Heli-Crashes …) und
-  Objekte/Gebäude per Fingertipp setzen, verschieben, löschen
+- 🗺️ Interaktive Karten für Chernarus, Livonia und Sakhal: Spawnpunkte,
+  Events (Heli-Crashes …) und Objekte/Gebäude per Fingertipp bearbeiten
 - 🎒 Loot-Editor für `types.xml` als durchsuchbare Tabelle
 - 🖥️ Serverstatus, Neustart und Stopp per Knopfdruck
 - 💾 Automatisches Backup vor jedem Speichern (im Browser, unter ⚙️ abrufbar)
 - 🧰 Generatoren für Loadouts, Gaszonen, Horden, Heli-Crashes, Fahrzeuge,
   Inhalte/Aufsätze und Events – jeweils mit Vorschau und Diff
-- 🎒 Eigenständiger Loadout-Designer mit 14 Ausrüstungsplätzen, Cargo,
-  1.900+ Items, Waffen-Aufsätzen, Magazinen und Browser-Presetbibliothek
+- 🎒 Vollständiger eigenständiger Loadout-Designer mit 14 Ausrüstungsplätzen,
+  1.400+ Items, Waffen-Aufsätzen, geladenen Magazinen, Import und
+  durchsuchbarer Browser-Presetbibliothek
 
 ## Erste Schritte
 

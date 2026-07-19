@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Browse Loadouts - DayZ Player Loadout Generator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🎖️</text></svg>">
+<link href="vendor/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="vendor/tabler-icons.min.css">
+<link rel="stylesheet" href="vendor/sweetalert2.min.css">
+<link rel="stylesheet" href="loadout.css">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container">
+    <a class="navbar-brand" href="index.html"><span class="header-logo">🎖️</span> DayZ Loadout Generator</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"><span class="navbar-toggler-icon"></span></button>
+    <div class="collapse navbar-collapse" id="navbarNav">
+      <ul class="navbar-nav">
+        <li class="nav-item"><a class="nav-link" href="index.html">Generator</a></li>
+        <li class="nav-item"><a class="nav-link active" href="browse-loadouts.html">Browse Loadouts</a></li>
+        <li class="nav-item"><a class="nav-link" href="about.html">About</a></li>
+        <li class="nav-item"><a class="nav-link" href="../index.html">🧟 Server-Manager</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container">
+  <div class="row">
+    <div class="col-md-12">
+      <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header bg-dark text-light d-flex justify-content-between align-items-center">
+          <h4 class="mb-0"><i class="ti ti-list"></i> Browse Loadouts</h4>
+          <span class="badge bg-dark text-light border border-secondary" id="gameVersionBadge"><i class="ti ti-versions me-1"></i>types.xml dataset</span>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-warning text-center mb-3" id="loadoutTipsAlert">
+            <div id="loadoutTipsContainer">Browse and download saved loadouts for your DayZ server – example presets included, your own saves are stored in this browser</div>
+          </div>
+          <div class="mb-3">
+            <div class="input-group">
+              <span class="input-group-text bg-dark text-light border-secondary"><i class="ti ti-search"></i></span>
+              <input class="form-control bg-dark text-light border-secondary" id="loadout-search" placeholder="Search loadouts by name or creator...">
+              <button class="btn btn-primary" id="search-loadouts-btn"><i class="ti ti-search"></i> Search</button>
+            </div>
+            <div class="small text-muted mt-1">Find loadouts for any playstyle or server type</div>
+          </div>
+          <div class="d-flex justify-content-end mb-3">
+            <select id="loadout-filter" class="form-select form-select-sm bg-dark text-light border-secondary" style="width:auto">
+              <option value="recent">Most Recent</option>
+              <option value="popular">Most Popular</option>
+              <option value="my">My Loadouts</option>
+            </select>
+          </div>
+          <div id="loadouts-container">
+            <div class="text-center p-4">
+              <div class="spinner-border text-light" role="status"><span class="visually-hidden">Loading...</span></div>
+            </div>
+          </div>
+          <div class="mt-4">
+            <nav aria-label="Loadout pagination"><ul class="pagination justify-content-center" id="loadout-pagination"></ul></nav>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="bg-dark text-light py-5">
+  <div class="container">
+    <div class="row g-4">
+      <div class="col-md-5">
+        <h5 class="fw-bold mb-3">DayZ Loadout Generator</h5>
+        <p class="small text-muted">Create, save, and share your custom DayZ loadouts for server configuration. Runs completely in your browser.</p>
+      </div>
+      <div class="col-md-3">
+        <h6 class="fw-bold mb-3">Links</h6>
+        <ul class="list-unstyled small">
+          <li class="mb-2"><a href="index.html" class="text-light text-decoration-none hover-primary">Generator</a></li>
+          <li class="mb-2"><a href="../index.html" class="text-light text-decoration-none hover-primary">DayZ Server-Manager</a></li>
+        </ul>
+      </div>
+      <div class="col-md-4">
+        <h6 class="fw-bold mb-3">Resources</h6>
+        <ul class="list-unstyled small">
+          <li class="mb-2"><a href="https://community.bistudio.com/wiki/DayZ:Spawning_Gear_Configuration" class="text-light text-decoration-none hover-primary">Official DayZ Wiki: Spawning Gear Configuration</a></li>
+          <li class="mb-2"><a href="https://forums.dayz.com/" class="text-light text-decoration-none hover-primary">DayZ Forums</a></li>
+        </ul>
+      </div>
+    </div>
+    <hr class="my-4 bg-secondary">
+    <div class="text-center small text-muted">
+      <p class="mb-0">This website is not affiliated with or authorized by Bohemia Interactive a.s. Bohemia Interactive, ARMA, DAYZ, and all associated logos and designs are trademarks or registered trademarks of Bohemia Interactive a.s.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+window.UIManager = {
+  showNotification(msg, type = 'info') {
+    if (window.Swal) {
+      Swal.fire({ title: type.charAt(0).toUpperCase() + type.slice(1), text: msg, icon: type,
+        toast: true, position: 'top-end', showConfirmButton: false, timer: 3000,
+        timerProgressBar: true, background: '#2a2a2a', color: '#f0f0f0' });
+    } else alert(msg);
+  }
+};
+</script>
+<script src="vendor/bootstrap.bundle.min.js"></script>
+<script src="vendor/sweetalert2.min.js"></script>
+<script src="browse.js"></script>
+</body>
+</html>

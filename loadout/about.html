@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>About - DayZ Player Loadout Generator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🎖️</text></svg>">
+<link href="vendor/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="vendor/tabler-icons.min.css">
+<link rel="stylesheet" href="loadout.css">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container">
+    <a class="navbar-brand" href="index.html"><span class="header-logo">🎖️</span> DayZ Loadout Generator</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"><span class="navbar-toggler-icon"></span></button>
+    <div class="collapse navbar-collapse" id="navbarNav">
+      <ul class="navbar-nav">
+        <li class="nav-item"><a class="nav-link" href="index.html">Generator</a></li>
+        <li class="nav-item"><a class="nav-link" href="browse-loadouts.html">Browse Loadouts</a></li>
+        <li class="nav-item"><a class="nav-link active" href="about.html">About</a></li>
+        <li class="nav-item"><a class="nav-link" href="../index.html">🧟 Server-Manager</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container pb-5">
+  <div class="card bg-dark border-secondary">
+    <div class="card-header bg-dark text-light"><h4 class="mb-0"><i class="ti ti-info-circle"></i> About</h4></div>
+    <div class="card-body">
+      <p>This tool builds <b>player spawn loadouts</b> for DayZ servers using the
+        <a class="text-light" href="https://community.bistudio.com/wiki/DayZ:Spawning_Gear_Configuration">Spawning Gear Configuration</a>
+        (<code>cfgPlayerSpawnGearPresets</code>) introduced in DayZ 1.19+.</p>
+      <h6 class="text-primary mt-4">How to use it on your server</h6>
+      <ol>
+        <li>Build your loadout in the <a class="text-light" href="index.html">Generator</a> and <b>Download JSON</b>.</li>
+        <li>Upload the file to your mission folder (e.g. <code>mpmissions/dayzOffline.chernarusplus/</code>).</li>
+        <li>Register it in <code>cfggameplay.json</code> under
+          <code>WorldsData → playerSpawnGearPresetFiles</code>, e.g.<br>
+          <code>"playerSpawnGearPresetFiles": [ "my_loadout.json" ]</code></li>
+        <li>Restart the server. New characters now spawn with the loadout
+          (if several presets are listed, one is picked by <code>spawnWeight</code>).</li>
+      </ol>
+      <h6 class="text-primary mt-4">Notes</h6>
+      <ul>
+        <li>The item database (1431 items) was generated from <code>types.xml</code>,
+          <code>cfgspawnabletypes.xml</code> and <code>cfgrandompresets.xml</code>.</li>
+        <li>Everything runs in your browser – saved loadouts live in local storage on this device.</li>
+        <li>Multiple items in the same slot are alternatives: the game picks one at random,
+          weighted by each item's spawn weight.</li>
+      </ul>
+      <p class="small text-muted mt-4 mb-0">This website is not affiliated with or authorized by Bohemia Interactive a.s.
+        Bohemia Interactive, ARMA, DAYZ, and all associated logos and designs are trademarks or registered
+        trademarks of Bohemia Interactive a.s.</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>
